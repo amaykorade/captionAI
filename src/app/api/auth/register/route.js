@@ -43,13 +43,14 @@ export async function POST(request) {
       }
     }
     
-    // Create new user
+    // Create new user (ensure role is set)
     const user = new User({
       username,
       email,
       password,
       firstName: firstName || '',
-      lastName: lastName || ''
+      lastName: lastName || '',
+      role: 'user'
     });
     
     await user.save();

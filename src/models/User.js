@@ -21,8 +21,23 @@ const UserSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    required: true,
-    minlength: 6
+    required: function() {
+      return !this.googleId; // Password not required if Google OAuth
+    },
+    validate: {
+      validator: function(value) {
+        // If user has googleId, password is not required
+        if (this.googleId) return true;
+        // If no googleId, password must exist and be at least 6 chars
+        return value && value.length >= 6;
+      },
+      message: 'Password must be at least 6 characters long'
+    }
+  },
+  googleId: {
+    type: String,
+    sparse: true,
+    unique: true
   },
   
   // Profile information
@@ -42,6 +57,12 @@ const UserSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  role: {
+    type: String,
+    enum: ['user', 'admin'],
+    default: 'user',
+    index: true
+  },
   isVerified: {
     type: Boolean,
     default: false
@@ -57,6 +78,70 @@ const UserSchema = new mongoose.Schema({
     default: 0
   },
   
+  // Subscription and billing
+  subscriptionPlan: {
+    type: String,
+    enum: ['free', 'creator', 'pro', 'enterprise'],
+    default: 'free'
+  },
+  subscriptionStatus: {
+    type: String,
+    enum: ['active', 'inactive', 'cancelled', 'expired'],
+    default: 'active'
+  },
+  subscriptionExpiresAt: {
+    type: Date,
+    default: null
+  },
+  subscriptionProvider: {
+    type: String,
+    default: 'manual'
+  },
+  subscriptionAmountCents: {
+    type: Number,
+    default: 0
+  },
+  subscriptionCurrency: {
+    type: String,
+    default: 'USD'
+  },
+  subscriptionRenewsAt: {
+    type: Date,
+    default: null
+  },
+  lastPaymentAt: {
+    type: Date,
+    default: null
+  },
+  
+  // Free tier usage limits
+  freeTierVideosProcessed: {
+    type: Number,
+    default: 0
+  },
+  freeTierTotalDuration: {
+    type: Number, // in seconds
+    default: 0
+  },
+
+  // Monthly usage for paid plans
+  monthlyVideosProcessed: {
+    type: Number,
+    default: 0
+  },
+  monthlyTotalDuration: {
+    type: Number, // seconds in current period
+    default: 0
+  },
+  monthlyPeriodStart: {
+    type: Date,
+    default: null
+  },
+  monthlyPeriodEnd: {
+    type: Date,
+    default: null
+  },
+  
   // Timestamps
   createdAt: {
     type: Date,
@@ -68,9 +153,9 @@ const UserSchema = new mongoose.Schema({
   }
 });
 
-// Hash password before saving
+// Hash password before saving (only if password exists and is modified)
 UserSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password') || !this.password) return next();
   
   try {
     const salt = await bcrypt.genSalt(12);
@@ -93,10 +178,60 @@ UserSchema.methods.getProfile = function() {
   return userObject;
 };
 
+// Method to check if user can process a video
+UserSchema.methods.canProcessVideo = function(videoDurationSeconds) {
+  // Paid subscribers can process unlimited videos
+  if (this.subscriptionPlan !== 'free' && this.subscriptionStatus === 'active') {
+    return { canProcess: true, reason: null };
+  }
+  
+  // Free tier restrictions
+  if (this.freeTierVideosProcessed >= 1) {
+    return { 
+      canProcess: false, 
+      reason: 'Free tier limit reached. Please upgrade to process more videos.' 
+    };
+  }
+  
+  if (videoDurationSeconds > 600) { // 10 minutes = 600 seconds
+    return { 
+      canProcess: false, 
+      reason: 'Video exceeds 10 minute limit for free tier. Please upgrade or use a shorter video.' 
+    };
+  }
+  
+  if (this.freeTierTotalDuration + videoDurationSeconds > 600) {
+    return { 
+      canProcess: false, 
+      reason: 'Total duration limit exceeded for free tier. Please upgrade to process longer videos.' 
+    };
+  }
+  
+  return { canProcess: true, reason: null };
+};
+
+// Method to increment usage after processing
+UserSchema.methods.incrementUsage = function(videoDurationSeconds) {
+  if (this.subscriptionPlan === 'free') {
+    this.freeTierVideosProcessed += 1;
+    this.freeTierTotalDuration += videoDurationSeconds;
+  }
+  this.transcriptionCount += 1;
+  this.totalProcessingTime += videoDurationSeconds;
+  return this.save();
+};
+
 // Create indexes for better performance
 UserSchema.index({ email: 1 });
 UserSchema.index({ username: 1 });
 UserSchema.index({ createdAt: -1 });
+
+// In dev/hot-reload, ensure schema updates (like new fields) take effect
+if (process.env.NODE_ENV !== 'production' && mongoose.models.User) {
+  try {
+    mongoose.deleteModel('User');
+  } catch (e) {}
+}
 
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 

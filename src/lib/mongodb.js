@@ -20,9 +20,25 @@ async function connectDB() {
   if (!cached.promise) {
     const opts = {
       bufferCommands: false,
+      // Modern TLS/SSL options for MongoDB Atlas
+      tls: true,
+      tlsAllowInvalidCertificates: true, // For development/testing
+      // Connection options
+      retryWrites: true,
+      w: 'majority',
+      // Connection timeout
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
     };
 
+    // If using local MongoDB, remove TLS options
+    if (MONGODB_URI.includes('localhost') || MONGODB_URI.includes('127.0.0.1')) {
+      delete opts.tls;
+      delete opts.tlsAllowInvalidCertificates;
+    }
+
     cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
+      console.log('MongoDB connected successfully');
       return mongoose;
     });
   }
@@ -31,6 +47,7 @@ async function connectDB() {
     cached.conn = await cached.promise;
   } catch (e) {
     cached.promise = null;
+    console.error('MongoDB connection error:', e);
     throw e;
   }
 

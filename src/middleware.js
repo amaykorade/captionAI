@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { NextRequest } from 'next/server';
 
 const AUTH_PATHS = ['/auth/login', '/auth/register'];
-const PUBLIC_PATHS = ['/landing']; // Add landing page as a public path
+const PUBLIC_PATHS = ['/landing', '/pricing']; // Add landing page and pricing as public paths
 
 export function middleware(req) {
   const { pathname } = req.nextUrl;
@@ -17,11 +17,15 @@ export function middleware(req) {
     return NextResponse.next();
   }
 
-  const token = req.cookies.get('auth_token')?.value;
+  // Check for both NextAuth session and manual auth token
+  const nextAuthSession = req.cookies.get('next-auth.session-token')?.value || 
+                         req.cookies.get('__Secure-next-auth.session-token')?.value;
+  const manualToken = req.cookies.get('auth_token')?.value;
+  const hasAuth = nextAuthSession || manualToken;
 
   // If visiting auth pages while authenticated, redirect to home
   if (AUTH_PATHS.some(p => pathname.startsWith(p))) {
-    if (token) {
+    if (hasAuth) {
       const home = req.nextUrl.clone();
       home.pathname = '/';
       return NextResponse.redirect(home);
@@ -35,7 +39,7 @@ export function middleware(req) {
   }
 
   // Protect all other app routes
-  if (!token) {
+  if (!hasAuth) {
     const loginUrl = req.nextUrl.clone();
     loginUrl.pathname = '/auth/login';
     loginUrl.searchParams.set('next', pathname);

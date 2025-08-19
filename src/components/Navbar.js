@@ -4,23 +4,27 @@ import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useState, useRef, useEffect } from 'react';
 import { User, ChevronDown, Menu, X } from 'lucide-react';
+import { useSession, signOut } from 'next-auth/react';
 
 export default function Navbar() {
   const router = useRouter();
   const pathname = usePathname();
+  const { data: session, status } = useSession();
   const [profileOpen, setProfileOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [user, setUser] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const dropdownRef = useRef(null);
 
-  const isUserAuthenticated = isInitialized && !!user;
+  const isUserAuthenticated = isInitialized && (!!user || !!session);
 
   const refreshUser = async () => {
     try {
       const res = await fetch('/api/user/me', { credentials: 'include', cache: 'no-store' });
+      
       if (res.ok) {
         const data = await res.json();
+        
         if (data.success) {
           setUser(data.user);
         } else {
@@ -34,23 +38,46 @@ export default function Navbar() {
     }
   };
 
-  // Initialize auth state
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      await refreshUser();
-      if (mounted) {
+  const checkManualAuth = async () => {
+    try {
+      const res = await fetch('/api/user/me', { credentials: 'include', cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setUser(data.user);
+          setIsInitialized(true);
+        } else {
+          setUser(null);
+          setIsInitialized(true);
+        }
+      } else {
+        setUser(null);
         setIsInitialized(true);
       }
-    })();
-    return () => { mounted = false; };
-  }, []);
+    } catch (error) {
+      setUser(null);
+      setIsInitialized(true);
+    }
+  };
+
+  // Initialize auth state when session changes
+  useEffect(() => {
+    if (status === 'loading') return;
+    
+    if (session?.user?.email) {
+      refreshUser();
+      setIsInitialized(true);
+    } else {
+      // Check if user has manual auth token
+      checkManualAuth();
+    }
+  }, [session, status]);
 
   // Refetch on route change
   useEffect(() => {
     if (!isInitialized) return;
     refreshUser();
-  }, [pathname]);
+  }, [pathname, isInitialized]);
 
   // Listen for custom auth change and tab visibility
   useEffect(() => {
@@ -82,23 +109,25 @@ export default function Navbar() {
 
   const handleLogout = async () => {
     try {
+      // Sign out from NextAuth
+      await signOut({ redirect: false });
+      // Also call our custom logout to clear any custom cookies
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include', cache: 'no-store' });
     } catch {}
     setUser(null);
     setProfileOpen(false);
     setMobileOpen(false);
     window.dispatchEvent(new Event('auth:changed'));
-    if (typeof window !== 'undefined') {
-      window.location.href = '/auth/login';
-    } else {
-      router.push('/auth/login');
-    }
+    router.push('/auth/login');
   };
 
   const NavLinks = () => (
     <div className="flex flex-col sm:flex-row sm:items-center sm:space-x-6 gap-3 sm:gap-0">
       <Link href="/landing" className="text-gray-300 hover:text-white text-sm font-medium transition-colors">
         Home
+      </Link>
+      <Link href="/pricing" className="text-gray-300 hover:text-white text-sm font-medium transition-colors">
+        Pricing
       </Link>
       {isUserAuthenticated ? (
         <>
@@ -144,6 +173,21 @@ export default function Navbar() {
                     <div className="px-4 py-3 border-b border-slate-700">
                       <p className="text-sm font-medium text-white truncate">{user?.name || 'User'}</p>
                       <p className="text-sm text-gray-300 truncate">{user?.email || ''}</p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        Plan: {((user?.subscriptionPlan || 'free').charAt(0).toUpperCase() + (user?.subscriptionPlan || 'free').slice(1))}
+                        {user?.role === 'admin' && <span className="ml-2 inline-block px-2 py-0.5 text-[10px] rounded bg-purple-600 text-white">Admin</span>}
+                      </p>
+                      {(user?.subscriptionPlan === 'free' || user?.subscriptionPlan === undefined) && user?.role !== 'admin' && (
+                        <div className="mt-2 p-2 bg-yellow-900/20 border border-yellow-700/30 rounded text-xs">
+                          <p className="text-yellow-300 font-medium">Free Plan Usage</p>
+                          <p className="text-yellow-400">
+                            {user?.usage?.freeTierVideosProcessed || 0}/1 videos used
+                          </p>
+                          <p className="text-yellow-400">
+                            {Math.round((user?.usage?.freeTierTotalDuration || 0) / 60)}/10 minutes used
+                          </p>
+                        </div>
+                      )}
                     </div>
                     <Link
                       href="/settings"
@@ -152,6 +196,22 @@ export default function Navbar() {
                     >
                       Settings
                     </Link>
+                    <Link
+                      href="/settings/billing"
+                      className="flex items-center px-4 py-2 text-sm text-gray-300 hover:bg-slate-700 hover:text-white"
+                      onClick={() => setProfileOpen(false)}
+                    >
+                      Billing
+                    </Link>
+                    {(user?.subscriptionPlan === 'free' || user?.subscriptionPlan === undefined) && user?.role !== 'admin' && (
+                      <Link
+                        href="/pricing"
+                        className="flex items-center px-4 py-2 text-sm text-blue-400 hover:bg-slate-700 hover:text-blue-300"
+                        onClick={() => setProfileOpen(false)}
+                      >
+                        Upgrade Plan
+                      </Link>
+                    )}
                     <div className="border-t border-slate-700 my-1"></div>
                     <button
                       className="flex w-full items-center px-4 py-2 text-sm text-red-400 hover:bg-slate-700 hover:text-red-300"
@@ -195,6 +255,20 @@ export default function Navbar() {
                   <div className="px-3 py-2 border border-slate-700 rounded-lg">
                     <p className="text-sm font-medium text-white">{user?.name || 'User'}</p>
                     <p className="text-sm text-gray-300">{user?.email || ''}</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Plan: {((user?.subscriptionPlan || 'free').charAt(0).toUpperCase() + (user?.subscriptionPlan || 'free').slice(1))}
+                    </p>
+                    {(user?.subscriptionPlan === 'free' || user?.subscriptionPlan === undefined) && (
+                      <div className="mt-2 p-2 bg-yellow-900/20 border border-yellow-700/30 rounded text-xs">
+                        <p className="text-yellow-300 font-medium">Free Plan Usage</p>
+                        <p className="text-yellow-400">
+                          {user?.usage?.freeTierVideosProcessed || 0}/1 videos used
+                        </p>
+                        <p className="text-yellow-400">
+                          {Math.round((user?.usage?.freeTierTotalDuration || 0) / 60)}/10 minutes used
+                        </p>
+                      </div>
+                    )}
                   </div>
                   <Link
                     href="/settings"
@@ -203,6 +277,22 @@ export default function Navbar() {
                   >
                     Settings
                   </Link>
+                  <Link
+                    href="/settings/billing"
+                    className="px-3 py-2 text-sm text-gray-300 hover:bg-slate-800 rounded-lg text-center"
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    Billing
+                  </Link>
+                  {(user?.subscriptionPlan === 'free' || user?.subscriptionPlan === undefined) && (
+                    <Link
+                      href="/pricing"
+                      className="px-3 py-2 text-sm text-blue-400 hover:bg-slate-800 rounded-lg text-center"
+                      onClick={() => setMobileOpen(false)}
+                    >
+                      Upgrade Plan
+                    </Link>
+                  )}
                   <button
                     className="px-3 py-2 text-sm text-red-400 hover:bg-slate-800 rounded-lg text-center"
                     onClick={() => { setMobileOpen(false); handleLogout(); }}

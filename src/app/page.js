@@ -1,10 +1,15 @@
+/* eslint-disable react/no-unescaped-entities */
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 
 export default function Home() {
+  const router = useRouter();
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [audioUrl, setAudioUrl] = useState(null);
@@ -35,8 +40,48 @@ export default function Home() {
   const [savingRaw, setSavingRaw] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState(null);
   const [abortController, setAbortController] = useState(null);
+  const [user, setUser] = useState(null);
+  const [userLoading, setUserLoading] = useState(true);
   const fileInputRef = useRef(null);
   const ffmpegRef = useRef(null);
+
+  // Use NextAuth session
+  const { data: session, status } = useSession();
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (status === 'unauthenticated') {
+      router.push('/auth/login');
+    }
+  }, [status, router]);
+
+  // Fetch user data when session changes
+  useEffect(() => {
+    const fetchUser = async () => {
+      if (!session?.user?.email) {
+        setUser(null);
+        setUserLoading(false);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/user/me', { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success) {
+            setUser(data.user);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user:', error);
+      } finally {
+        setUserLoading(false);
+      }
+    };
+    
+    if (status === 'loading') return;
+    fetchUser();
+  }, [session, status]);
 
   const initFFmpeg = async () => {
     if (ffmpegRef.current) return ffmpegRef.current;
@@ -164,15 +209,35 @@ export default function Home() {
     }
   };
 
+  // Helper flags for free-tier limit (admin users bypass all restrictions)
+  const isAdmin = !!user && user.role === 'admin';
+  const isFreePlanUser = !!user && !isAdmin && (user.subscriptionPlan === 'free' || user.subscriptionPlan === undefined);
+  const freeVideosUsed = user?.usage?.freeTierVideosProcessed || 0;
+  const freeDurationUsed = user?.usage?.freeTierTotalDuration || 0;
+  const freeLimitReached = isFreePlanUser && (freeVideosUsed >= 1 || freeDurationUsed >= 600);
+
+  // Debug logging
+  useEffect(() => {
+    if (user) {
+      console.log('User state updated:', {
+        subscriptionPlan: user.subscriptionPlan,
+        freeVideosUsed,
+        freeDurationUsed,
+        freeLimitReached,
+        usage: user.usage
+      });
+    }
+  }, [user, freeVideosUsed, freeDurationUsed, freeLimitReached]);
+
   const handleFileUpload = (event) => {
+    // Block if free tier limit reached
+    if (isFreePlanUser && freeLimitReached) {
+      setError('Free tier limit reached. Please upgrade your plan to process more videos.');
+      return;
+    }
     const file = event.target.files[0];
     if (!file) {
       setError('Please select a file.');
-      return;
-    }
-    
-    if (!file.type.startsWith('video/')) {
-      setError('Please select a valid video file. Supported formats: MP4, AVI, MOV, MKV, etc.');
       return;
     }
     
@@ -189,6 +254,11 @@ export default function Home() {
 
   const handleUrlSubmit = (e) => {
     e.preventDefault();
+    // Block if free tier limit reached
+    if (isFreePlanUser && freeLimitReached) {
+      setError('Free tier limit reached. Please upgrade your plan to process more videos.');
+      return;
+    }
     if (videoUrl.trim()) {
       extractAudio(videoUrl.trim());
     } else {
@@ -235,6 +305,29 @@ export default function Home() {
 
   const transcribeAudio = async (audioUrl) => {
     try {
+      // Check usage limits before starting transcription (admin users bypass all restrictions)
+      if (user && !isAdmin && user.subscriptionPlan === 'free') {
+        if (user.usage?.freeTierVideosProcessed >= 1) {
+          setTranscriptionError('Free tier limit reached. Please upgrade your plan to process more videos.');
+          return;
+        }
+        
+        // Estimate video duration (rough approximation based on file size)
+        const response = await fetch(audioUrl);
+        const audioBlob = await response.blob();
+        const estimatedDurationSeconds = Math.ceil(audioBlob.size / (1024 * 1024) * 60); // 1MB ≈ 1 minute
+        
+        if (estimatedDurationSeconds > 600) { // 10 minutes = 600 seconds
+          setTranscriptionError('Video exceeds 10 minute limit for free tier. Please upgrade or use a shorter video.');
+          return;
+        }
+        
+        if ((user.usage?.freeTierTotalDuration || 0) + estimatedDurationSeconds > 600) {
+          setTranscriptionError('Total duration limit exceeded for free tier. Please upgrade to process longer videos.');
+          return;
+        }
+      }
+
       setIsTranscribing(true);
       setTranscriptionProgress(0);
       setTranscriptionError(null);
@@ -342,6 +435,21 @@ export default function Home() {
 
       if (!apiResponse.ok) {
         const errorData = await apiResponse.json();
+        
+        // Handle usage limit errors specifically
+        if (apiResponse.status === 403 && errorData.requiresUpgrade) {
+          setTranscriptionError(`${errorData.error} Please upgrade your plan to continue.`);
+          // Refresh user data to show updated usage
+          const userRes = await fetch('/api/user/me', { credentials: 'include' });
+          if (userRes.ok) {
+            const userData = await userRes.json();
+            if (userData.success) {
+              setUser(userData.user);
+            }
+          }
+          return;
+        }
+        
         throw new Error(errorData.error || 'Failed to transcribe audio');
       }
 
@@ -362,6 +470,20 @@ export default function Home() {
       
       setTranscriptionProgress(100);
       setTranscriptionStatus('Transcription completed successfully!');
+      
+      // Refresh user usage after a successful transcription so UI disables further uploads on free tier
+      try {
+        const userRes = await fetch('/api/user/me', { credentials: 'include' });
+        if (userRes.ok) {
+          const userData = await userRes.json();
+          if (userData.success) {
+            setUser(userData.user);
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new Event('auth:changed'));
+            }
+          }
+        }
+      } catch {}
       
       console.log('Transcription completed:', {
         wordCount: data.metadata.wordCount,
@@ -794,6 +916,61 @@ export default function Home() {
             Extract audio from videos and generate professional captions with AI
           </p>
           
+          {/* Plan and Usage */}
+          {!userLoading && user && !isAdmin && (
+            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="text-left">
+                  <h3 className="text-lg font-semibold text-yellow-800 mb-2">
+                    Plan: {((user.subscriptionPlan || 'free').charAt(0).toUpperCase() + (user.subscriptionPlan || 'free').slice(1))}
+                  </h3>
+                  {(user.subscriptionPlan === 'free' || user.subscriptionPlan === undefined) ? (
+                    <>
+                      <p className="text-yellow-700 text-sm">
+                        You've used {user.usage?.freeTierVideosProcessed || 0}/1 videos 
+                        ({Math.round((user.usage?.freeTierTotalDuration || 0) / 60)}/10 minutes)
+                      </p>
+                      {user.usage?.freeTierVideosProcessed >= 1 && (
+                        <p className="text-red-600 text-sm font-medium mt-1">
+                          ⚠️ Free tier limit reached. Upgrade to process more videos.
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-yellow-700 text-sm">
+                      Your subscription is active. Enjoy higher limits and faster processing.
+                    </p>
+                  )}
+                </div>
+                <Link
+                  href="/pricing"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                >
+                  {user.subscriptionPlan === 'free' ? 'Upgrade Plan' : 'Manage Plan'}
+                </Link>
+              </div>
+            </div>
+          )}
+
+          {/* Admin Status Display */}
+          {!userLoading && user && isAdmin && (
+            <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="text-left">
+                  <h3 className="text-lg font-semibold text-purple-800 mb-2">
+                    🛡️ Admin Access - Unlimited Usage
+                  </h3>
+                  <p className="text-purple-700 text-sm">
+                    You have full administrative access with no usage restrictions.
+                  </p>
+                </div>
+                <div className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium">
+                  Admin
+                </div>
+              </div>
+            </div>
+          )}
+          
           {/* Projects Button */}
           <div className="mb-6">
             <button
@@ -845,15 +1022,21 @@ export default function Home() {
                   accept="video/*"
                   onChange={handleFileUpload}
                   className="hidden"
-                  disabled={isProcessing}
+                  disabled={isProcessing || freeLimitReached}
                 />
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isProcessing}
+                  disabled={isProcessing || freeLimitReached}
                   className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {isProcessing ? 'Processing...' : 'Choose Video File'}
+                  {isProcessing ? 'Processing...' : (freeLimitReached ? 'Limit Reached' : 'Choose Video File')}
                 </button>
+                {freeLimitReached && (
+                  <div className="mt-3 text-sm">
+                    <span className="text-red-600 mr-2">Free tier limit reached.</span>
+                    <Link href="/pricing" className="text-blue-600 hover:underline">Upgrade to continue →</Link>
+                  </div>
+                )}
                 <p className="text-gray-500 mt-2">
                   Supports MP4, AVI, MOV, and other video formats
                 </p>
@@ -871,16 +1054,22 @@ export default function Home() {
                   onChange={(e) => setVideoUrl(e.target.value)}
                   placeholder="Enter video URL (direct video links work best)"
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={isProcessing}
+                  disabled={isProcessing || freeLimitReached}
                 />
               </div>
               <button
                 type="submit"
-                disabled={isProcessing || !videoUrl.trim()}
+                disabled={isProcessing || !videoUrl.trim() || freeLimitReached}
                 className="w-full bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {isProcessing ? 'Processing...' : 'Extract Audio'}
+                {isProcessing ? 'Processing...' : (freeLimitReached ? 'Limit Reached' : 'Extract Audio')}
               </button>
+              {freeLimitReached && (
+                <div className="text-sm">
+                  <span className="text-red-600 mr-2">Free tier limit reached.</span>
+                  <Link href="/pricing" className="text-blue-600 hover:underline">Upgrade to continue →</Link>
+                </div>
+              )}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                 <h4 className="font-semibold text-blue-800 mb-2">URL Processing Guide:</h4>
                 <ul className="text-sm text-blue-700 space-y-1">
