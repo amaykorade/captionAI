@@ -103,6 +103,11 @@ export const authOptions = {
       return true;
     },
     async redirect({ url, baseUrl }) {
+      // Safety check for empty or undefined URLs
+      if (!url || typeof url !== 'string') {
+        return baseUrl;
+      }
+      
       // Allows relative callback URLs
       if (url.startsWith("/")) {
         return `${baseUrl}${url}`;

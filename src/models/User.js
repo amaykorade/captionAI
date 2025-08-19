@@ -222,8 +222,6 @@ UserSchema.methods.incrementUsage = function(videoDurationSeconds) {
 };
 
 // Create indexes for better performance
-UserSchema.index({ email: 1 });
-UserSchema.index({ username: 1 });
 UserSchema.index({ createdAt: -1 });
 
 // In dev/hot-reload, ensure schema updates (like new fields) take effect

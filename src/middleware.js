@@ -7,6 +7,11 @@ const PUBLIC_PATHS = ['/landing', '/pricing']; // Add landing page and pricing a
 export function middleware(req) {
   const { pathname } = req.nextUrl;
 
+  // Safety check for pathname
+  if (!pathname || typeof pathname !== 'string') {
+    return NextResponse.next();
+  }
+
   // Allow static files and API routes to pass
   if (
     pathname.startsWith('/_next') ||
