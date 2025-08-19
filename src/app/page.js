@@ -41,7 +41,7 @@ export default function Home() {
   const [transcriptionError, setTranscriptionError] = useState(null);
   const [abortController, setAbortController] = useState(null);
   const [user, setUser] = useState(null);
-  const [userLoading] = useState(true);
+  const [userLoading, setUserLoading] = useState(true);
   const fileInputRef = useRef(null);
   const ffmpegRef = useRef(null);
   
