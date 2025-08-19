@@ -103,9 +103,13 @@ export const authOptions = {
       return true;
     },
     async redirect({ url, baseUrl }) {
-      // Safety check for empty or undefined URLs
-      if (!url || typeof url !== 'string') {
+      // Comprehensive safety checks for static generation
+      if (!url || typeof url !== 'string' || url.trim() === '') {
         return baseUrl;
+      }
+      
+      if (!baseUrl || typeof baseUrl !== 'string') {
+        return '/';
       }
       
       // Allows relative callback URLs
