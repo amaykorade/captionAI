@@ -76,14 +76,14 @@ export async function POST(request) {
 
     // Check audio data size (base64 data is larger than original file)
     const audioSize = Math.ceil(audioData.length * 0.75); // Approximate size in bytes
-    const maxSize = 100 * 1024 * 1024; // 100MB limit for base64 data
+    const maxSize = 500 * 1024 * 1024; // 500MB limit for base64 data (supports chunked processing)
     
     console.log('Received base64 data length:', audioData.length);
     console.log('Estimated original file size:', Math.round(audioSize / 1024 / 1024 * 100) / 100, 'MB');
     
     if (audioSize > maxSize) {
       return NextResponse.json({ 
-        error: `Audio file too large (${Math.round(audioSize / 1024 / 1024)}MB). Maximum allowed size is 100MB. Please use a smaller file or compress your video. Note: Base64 encoding increases file size by approximately 33%.` 
+        error: `Audio file too large (${Math.round(audioSize / 1024 / 1024)}MB). Maximum allowed size is 500MB. For larger files, the client will automatically use chunked processing.` 
       }, { status: 413 });
     }
 

@@ -649,7 +649,7 @@ export default function Home() {
         } catch (parseError) {
           // Handle cases where response is not JSON
           if (apiResponse.status === 413) {
-            setTranscriptionError('File too large for processing. Please use a smaller video file (under 100MB) or compress your video.');
+            setTranscriptionError('File too large for direct processing. The system will automatically use chunked processing for files over 75MB.');
             return;
           }
           errorData = { error: 'Unknown error occurred' };
@@ -657,7 +657,7 @@ export default function Home() {
         
         // Handle specific error types
         if (apiResponse.status === 413) {
-          setTranscriptionError('File too large for processing. Please use a smaller video file (under 100MB) or compress your video.');
+          setTranscriptionError('File too large for direct processing. The system will automatically use chunked processing for files over 75MB.');
           return;
         }
         
