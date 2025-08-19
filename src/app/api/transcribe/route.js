@@ -72,6 +72,10 @@ export async function POST(request) {
     // Estimate duration for current request (rough) - define once for all branches
     const estimatedDurationSeconds = Math.ceil(audioSize / (1024 * 1024) * 60);
 
+    // Define variables in main scope for later use
+    let isPaidActive = false;
+    let reservedFreeUsage = false;
+
     // Admin bypass
     if (user.role === 'admin') {
       console.log('Admin user detected. Bypassing plan limits.');
@@ -87,9 +91,9 @@ export async function POST(request) {
         user.subscriptionStatus = 'expired';
       }
 
-      const isPaidActive = (user.subscriptionPlan && user.subscriptionPlan !== 'free') && user.subscriptionStatus === 'active' && (!user.subscriptionRenewsAt || now < new Date(user.subscriptionRenewsAt));
+      isPaidActive = (user.subscriptionPlan && user.subscriptionPlan !== 'free') && user.subscriptionStatus === 'active' && (!user.subscriptionRenewsAt || now < new Date(user.subscriptionRenewsAt));
 
-      let reservedFreeUsage = false; // keep defined for later reconciliation
+      // keep defined for later reconciliation
 
       // Helper: ensure monthly window for paid users (calendar month based on UTC)
       const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
@@ -316,6 +320,39 @@ export async function POST(request) {
     console.log('Caption generation completed');
     console.log('Generated', captions.length, 'caption segments for video sync');
 
+    // Enhance text with ChatGPT if OpenAI API key is available
+    let enhancedText = '';
+    if (process.env.OPENAI_API_KEY && transcription.text) {
+      try {
+        console.log('Enhancing text with ChatGPT...');
+        const enhanceResponse = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/enhance-text`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cookie': request.headers.get('cookie') || '',
+          },
+          body: JSON.stringify({
+            rawText: transcription.text,
+            language: transcription.language || 'english'
+          })
+        });
+        
+        if (enhanceResponse.ok) {
+          const enhanceData = await enhanceResponse.json();
+          enhancedText = enhanceData.enhancedText || transcription.text;
+          console.log('Text enhancement completed');
+        } else {
+          console.log('Text enhancement failed, using original text');
+          enhancedText = transcription.text;
+        }
+      } catch (enhanceError) {
+        console.log('Text enhancement error, using original text:', enhanceError.message);
+        enhancedText = transcription.text;
+      }
+    } else {
+      enhancedText = transcription.text;
+    }
+
     // Save project to database
     let savedProject = null;
     try {
@@ -333,7 +370,7 @@ export async function POST(request) {
         audioSize: audioBuffer.length,
         transcription: {
           rawText: transcription.text,
-          enhancedText: '', // Will be filled when enhanced
+          enhancedText: enhancedText, // Now populated with enhanced text
           language: transcription.language,
           duration: transcription.duration,
           wordCount: transcription.words.length,
@@ -407,6 +444,7 @@ export async function POST(request) {
     return NextResponse.json({
       success: true,
       transcription: transcription.text,
+      enhancedText: enhancedText,
       captions: captions,
       formats: {
         srt: srtFormat,
