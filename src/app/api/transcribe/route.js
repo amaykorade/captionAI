@@ -325,26 +325,39 @@ export async function POST(request) {
     if (process.env.OPENAI_API_KEY && transcription.text) {
       try {
         console.log('Enhancing text with ChatGPT...');
-        const enhanceResponse = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/enhance-text`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cookie': request.headers.get('cookie') || '',
-          },
-          body: JSON.stringify({
-            rawText: transcription.text,
-            language: transcription.language || 'english'
-          })
+        
+        // Use the existing OpenAI client to enhance text directly
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: "You are a transcription enhancement expert. Your job is to rewrite transcripts while preserving all nuance, slang, cultural references, humor, and tone. Make the text more readable and natural while keeping the creator's authentic voice."
+            },
+            {
+              role: "user",
+              content: `Rewrite this transcript preserving slang, cultural nuance, humor, tone, and meaning. Do not make it formal unless needed.
+
+Raw Transcript:
+${transcription.text}
+
+Instructions:
+- Keep the original meaning and context
+- Preserve slang, informal language, and cultural references
+- Maintain humor and tone
+- Keep it natural and conversational
+- Only make it formal if the original content requires it
+- Ensure readability while maintaining authenticity
+
+Enhanced Transcript:`
+            }
+          ],
+          max_tokens: 2000,
+          temperature: 0.3
         });
         
-        if (enhanceResponse.ok) {
-          const enhanceData = await enhanceResponse.json();
-          enhancedText = enhanceData.enhancedText || transcription.text;
-          console.log('Text enhancement completed');
-        } else {
-          console.log('Text enhancement failed, using original text');
-          enhancedText = transcription.text;
-        }
+        enhancedText = completion.choices[0].message.content.trim();
+        console.log('Text enhancement completed');
       } catch (enhanceError) {
         console.log('Text enhancement error, using original text:', enhanceError.message);
         enhancedText = transcription.text;

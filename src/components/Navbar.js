@@ -145,7 +145,7 @@ export default function Navbar() {
         <div className="flex justify-between h-16 items-center">
           <div className="flex items-center gap-6">
             <Link href="/landing" className="flex items-center space-x-2">
-              <span className="text-lg font-bold text-white">API Vault</span>
+              <span className="text-lg font-bold text-white">SubtitleAI</span>
             </Link>
             <div className="hidden sm:block ml-4">
               <NavLinks />

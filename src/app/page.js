@@ -910,10 +910,10 @@ export default function Home() {
         {/* Header */}
         <div className="text-center">
           <h1 className="text-4xl font-bold text-gray-900 mb-4">
-            AI Caption Generator
+            AI Subtitle Generator
           </h1>
           <p className="text-xl text-gray-600 mb-8">
-            Extract audio from videos and generate professional captions with AI
+            Extract audio from videos and generate professional subtitles with AI
           </p>
           
           {/* Plan and Usage */}
@@ -1186,7 +1186,7 @@ export default function Home() {
                     disabled={!audioUrl || isTranscribing}
                     className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 disabled:bg-blue-400 transition-colors font-medium"
                   >
-                    {isTranscribing ? 'Generating Captions...' : 'Generate Captions'}
+                    {isTranscribing ? 'Generating Subtitles...' : 'Generate Subtitles'}
                   </button>
                   
                   <div className="mt-3 flex gap-3">
@@ -1207,7 +1207,7 @@ export default function Home() {
         {isTranscribing && (
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
             <div className="mb-2 flex justify-between text-sm text-gray-600">
-              <span>Generating captions with Whisper...</span>
+              <span>Generating subtitles with Whisper...</span>
               <span>{transcriptionProgress}%</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
@@ -1238,7 +1238,7 @@ export default function Home() {
                 <span>{transcriptionProgress >= 80 ? '✅' : '⏳'}</span>
               </div>
               <div className="flex justify-between">
-                <span>Caption Generation:</span>
+                <span>Subtitle Generation:</span>
                 <span>{transcriptionProgress >= 100 ? '✅' : '⏳'}</span>
               </div>
             </div>
@@ -1287,7 +1287,7 @@ export default function Home() {
         {captions && (
           <div className="mt-8 p-6 bg-white rounded-lg shadow-lg">
             <h3 className="text-xl font-semibold text-gray-800 mb-4">
-              Generated Captions
+              Generated Subtitles
             </h3>
             
             {/* Metadata */}
@@ -1303,7 +1303,7 @@ export default function Home() {
                   <span className="font-medium">Language:</span> {captions.metadata?.language || 'Unknown'}
                 </div>
                 <div>
-                  <span className="font-medium">Caption Segments:</span> {captions.metadata?.captionSegments || 0}
+                  <span className="font-medium">Subtitle Segments:</span> {captions.metadata?.captionSegments || 0}
                 </div>
               </div>
             </div>
@@ -1311,7 +1311,7 @@ export default function Home() {
             {/* Caption Segments Preview */}
             <div className="mb-6">
               <div className="flex items-center justify-between mb-3">
-                <h4 className="text-lg font-medium text-gray-700">Caption Segments (Video Sync)</h4>
+                <h4 className="text-lg font-medium text-gray-700">Subtitle Segments (Video Sync)</h4>
                 {!isEditingCaptions ? (
                   <button
                     onClick={() => {
@@ -1320,7 +1320,7 @@ export default function Home() {
                     }}
                     className="px-3 py-1 text-sm bg-gray-800 hover:bg-black text-white rounded-md"
                   >
-                    Edit Captions
+                                          Edit Subtitles
                   </button>
                 ) : (
                   <div className="flex gap-2">
@@ -1905,7 +1905,7 @@ export default function Home() {
               </svg>
             </div>
             <h3 className="font-semibold text-gray-800 mb-2">AI Transcription</h3>
-            <p className="text-gray-600 text-sm">Generate accurate captions using OpenAI Whisper</p>
+            <p className="text-gray-600 text-sm">Generate accurate subtitles using OpenAI Whisper</p>
           </div>
           
           <div className="bg-white rounded-lg shadow-lg p-6 text-center">
@@ -1915,7 +1915,7 @@ export default function Home() {
               </svg>
             </div>
             <h3 className="font-semibold text-gray-800 mb-2">Multiple Formats</h3>
-            <p className="text-gray-600 text-sm">Download captions in SRT, VTT, and JSON formats</p>
+            <p className="text-gray-600 text-sm">Download subtitles in SRT, VTT, and JSON formats</p>
           </div>
         </div>
       </div>

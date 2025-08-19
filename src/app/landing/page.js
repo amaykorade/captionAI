@@ -13,7 +13,7 @@ export default function LandingPage() {
             Subtitles That Speak Your Audience's Language — Literally.
           </h1>
           <p className="text-xl md:text-2xl text-gray-600 mb-8 max-w-4xl mx-auto leading-relaxed">
-            Stop losing global viewers to awkward auto-captions. Our AI subtitles preserve slang, humor, and cultural nuance in 15+ languages — so your content connects everywhere.
+            Stop losing global viewers to awkward auto-subtitles. Our AI subtitles preserve slang, humor, and cultural nuance in 15+ languages — so your content connects everywhere.
           </p>
           <Link 
             href="/auth/register" 
@@ -40,7 +40,7 @@ export default function LandingPage() {
       <section className="py-20 px-4 sm:px-6 lg:px-8 bg-gray-50">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-4xl font-bold text-gray-900 mb-8">
-            Why Most Auto-Captions Fail
+            Why Most Auto-Subtitles Fail
           </h2>
           <p className="text-xl text-gray-600 mb-8 leading-relaxed">
             Creators spend hours fixing bad subtitles — or worse, leave them as-is. The result?
@@ -187,7 +187,7 @@ export default function LandingPage() {
                 </li>
                 <li className="flex items-start">
                   <span className="mr-3">📝</span>
-                  <span>Natural, human-like captions (not robotic)</span>
+                  <span>Natural, human-like subtitles (not robotic)</span>
                 </li>
                 <li className="flex items-start">
                   <span className="mr-3">🚀</span>
@@ -279,12 +279,12 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="bg-gray-900 py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-6xl mx-auto text-center">
-          <div className="text-2xl font-bold text-white mb-4">Caption AI</div>
+                          <div className="text-2xl font-bold text-white mb-4">SubtitleAI</div>
           <p className="text-gray-400 mb-6">
             Making your content accessible to the world, one subtitle at a time.
           </p>
           <div className="text-gray-500 text-sm">
-            © 2024 Caption AI. All rights reserved.
+            © 2024 SubtitleAI. All rights reserved.
           </div>
         </div>
       </footer>
