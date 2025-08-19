@@ -7,6 +7,11 @@ import Project from '@/models/Project';
 import User from '@/models/User';
 import mongoose from 'mongoose';
 
+// Configure route for large file uploads
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300; // 5 minutes
+
 export async function POST(request) {
   const startTime = Date.now();
   
@@ -53,7 +58,17 @@ export async function POST(request) {
       }, { status: 404 });
     }
 
-    const { audioData, audioFormat = 'mp3', quality = 'balanced' } = await request.json();
+    let requestBody;
+    try {
+      requestBody = await request.json();
+    } catch (parseError) {
+      console.error('Failed to parse request body:', parseError);
+      return NextResponse.json({ 
+        error: 'Invalid request format. Please ensure the request contains valid JSON.' 
+      }, { status: 400 });
+    }
+    
+    const { audioData, audioFormat = 'mp3', quality = 'balanced' } = requestBody;
     
     if (!audioData) {
       return NextResponse.json({ error: 'Audio data is required' }, { status: 400 });
@@ -61,12 +76,12 @@ export async function POST(request) {
 
     // Check audio data size
     const audioSize = Math.ceil(audioData.length * 0.75); // Approximate size in bytes
-    const maxSize = 25 * 1024 * 1024; // 25MB limit
+    const maxSize = 100 * 1024 * 1024; // Increased to 100MB limit
     
     if (audioSize > maxSize) {
       return NextResponse.json({ 
-        error: `Audio file too large (${Math.round(audioSize / 1024 / 1024)}MB). Please use a smaller file.` 
-      }, { status: 400 });
+        error: `Audio file too large (${Math.round(audioSize / 1024 / 1024)}MB). Maximum allowed size is 100MB. Please use a smaller file or compress your video.` 
+      }, { status: 413 });
     }
 
     // Estimate duration for current request (rough) - define once for all branches
@@ -205,6 +220,11 @@ export async function POST(request) {
       }, { status: 500 });
     }
 
+    // Initialize OpenAI client in main scope
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
     // Convert base64 audio data to buffer
     const audioBuffer = Buffer.from(audioData, 'base64');
     
@@ -279,11 +299,6 @@ export async function POST(request) {
       }
 
       console.log('Starting Whisper API call with quality:', quality);
-      
-      // Use the OpenAI SDK with the file stream
-      const openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-      });
       
       // Transcribe audio using Whisper with timeout
       transcription = await Promise.race([

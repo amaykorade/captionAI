@@ -19,6 +19,9 @@ const nextConfig = {
   },
   // Ensure compatibility with FFmpeg.wasm
   serverExternalPackages: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
+  
+  // Ensure compatibility with FFmpeg.wasm
+  serverExternalPackages: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
 };
 
 export default nextConfig;

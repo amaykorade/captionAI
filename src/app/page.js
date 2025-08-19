@@ -349,7 +349,7 @@ export default function Home() {
       console.log('Original audio blob size:', audioBlob.size, 'bytes');
       
       // Check file size to prevent issues
-      const maxSize = 25 * 1024 * 1024; // 25MB limit for transcription
+      const maxSize = 100 * 1024 * 1024; // 100MB limit for transcription
       if (audioBlob.size > maxSize) {
         throw new Error(`Audio file too large for transcription (${Math.round(audioBlob.size / 1024 / 1024)}MB). Please use a smaller video file or compress the audio.`);
       }
@@ -434,7 +434,23 @@ export default function Home() {
       }
 
       if (!apiResponse.ok) {
-        const errorData = await apiResponse.json();
+        let errorData;
+        try {
+          errorData = await apiResponse.json();
+        } catch (parseError) {
+          // Handle cases where response is not JSON
+          if (apiResponse.status === 413) {
+            setTranscriptionError('File too large for processing. Please use a smaller video file (under 100MB) or compress your video.');
+            return;
+          }
+          errorData = { error: 'Unknown error occurred' };
+        }
+        
+        // Handle specific error types
+        if (apiResponse.status === 413) {
+          setTranscriptionError('File too large for processing. Please use a smaller video file (under 100MB) or compress your video.');
+          return;
+        }
         
         // Handle usage limit errors specifically
         if (apiResponse.status === 403 && errorData.requiresUpgrade) {

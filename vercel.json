@@ -1,0 +1,18 @@
+{
+  "functions": {
+    "src/app/api/transcribe/route.js": {
+      "maxDuration": 300
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/transcribe",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
+      ]
+    }
+  ]
+} 
