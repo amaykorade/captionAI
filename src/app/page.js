@@ -45,14 +45,8 @@ export default function Home() {
   const fileInputRef = useRef(null);
   const ffmpegRef = useRef(null);
   
-  // Chunked processing state
-  const [isChunkedProcessing, setIsChunkedProcessing] = useState(false);
-  const [chunkProgress, setChunkProgress] = useState(0);
-  const [currentChunk, setCurrentChunk] = useState(0);
-  const [totalChunks, setTotalChunks] = useState(0);
-  const [chunkedTranscription, setChunkedTranscription] = useState('');
-  const [chunkedCaptions, setChunkedCaptions] = useState([]);
-  const [chunkedMetadata, setChunkedMetadata] = useState({});
+  // Server-side chunked processing state
+  const [isServerChunking, setIsServerChunking] = useState(false);
 
   // Use NextAuth session
   const { data: session, status } = useSession();
@@ -112,75 +106,7 @@ export default function Home() {
     }
   };
 
-  // Split large audio into chunks for processing
-  const splitAudioIntoChunks = async (audioBlob, maxChunkSize = 75 * 1024 * 1024) => {
-    const ffmpeg = await initFFmpeg();
-    const chunks = [];
-    
-    // Write original audio to FFmpeg
-    await ffmpeg.writeFile('input.mp3', await fetchFile(audioBlob));
-    
-    // Get audio duration
-    const duration = await getAudioDuration(ffmpeg, 'input.mp3');
-    const chunkDuration = Math.ceil(duration / Math.ceil(audioBlob.size / maxChunkSize));
-    
-    console.log(`Splitting ${Math.round(audioBlob.size / 1024 / 1024 * 100) / 100}MB audio into chunks of ~${chunkDuration}s`);
-    
-    // Split audio into chunks
-    for (let i = 0; i < Math.ceil(duration / chunkDuration); i++) {
-      const startTime = i * chunkDuration;
-      const endTime = Math.min((i + 1) * chunkDuration, duration);
-      const chunkName = `chunk_${i}.mp3`;
-      
-      await ffmpeg.exec([
-        '-i', 'input.mp3',
-        '-ss', startTime.toString(),
-        '-t', (endTime - startTime).toString(),
-        '-ac', '1',
-        '-ar', '16000',
-        '-ab', '128k',
-        '-acodec', 'mp3',
-        chunkName
-      ]);
-      
-      const chunkData = await ffmpeg.readFile(chunkName);
-      const chunkBlob = new Blob([chunkData], { type: 'audio/mp3' });
-      
-      chunks.push({
-        index: i,
-        startTime,
-        endTime,
-        blob: chunkBlob,
-        name: chunkName
-      });
-      
-      // Clean up chunk file
-      await ffmpeg.deleteFile(chunkName);
-    }
-    
-    // Clean up input file
-    await ffmpeg.deleteFile('input.mp3');
-    
-    return chunks;
-  };
 
-  // Get audio duration using FFmpeg
-  const getAudioDuration = async (ffmpeg, fileName) => {
-    try {
-      const result = await ffmpeg.exec([
-        '-i', fileName,
-        '-f', 'null',
-        '-'
-      ]);
-      
-      // Parse duration from FFmpeg output (this is a simplified approach)
-      // In practice, you might want to use a more robust method
-      return 300; // Default to 5 minutes if we can't determine duration
-    } catch (error) {
-      console.log('Could not determine audio duration, using default');
-      return 300;
-    }
-  };
 
   // Process large files using server-side chunking
   const processLargeFileWithServer = async (audioBlob) => {
@@ -285,125 +211,9 @@ export default function Home() {
     }
   };
 
-  // Process audio chunk by chunk (legacy client-side)
-  const processAudioChunks = async (chunks) => {
-    setIsChunkedProcessing(true);
-    setTotalChunks(chunks.length);
-    setCurrentChunk(0);
-    setChunkProgress(0);
-    setChunkedTranscription('');
-    setChunkedCaptions([]);
-    setChunkedMetadata({});
-    
-    const results = [];
-    let totalWords = 0;
-    let totalDuration = 0;
-    let allCaptions = [];
-    
-    try {
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        setCurrentChunk(i + 1);
-        
-        console.log(`Processing chunk ${i + 1}/${chunks.length} (${Math.round(chunk.blob.size / 1024 / 1024 * 100) / 100}MB)`);
-        
-        // Process this chunk
-        const chunkResult = await processSingleChunk(chunk, i);
-        results.push(chunkResult);
-        
-        // Update progress
-        const progress = ((i + 1) / chunks.length) * 100;
-        setChunkProgress(progress);
-        
-        // Accumulate metadata
-        totalWords += chunkResult.wordCount || 0;
-        totalDuration += chunkResult.duration || 0;
-        allCaptions.push(...chunkResult.captions);
-        
-        // Update UI with partial results
-        setChunkedTranscription(prev => prev + (prev ? '\n\n' : '') + chunkResult.transcription);
-        setChunkedCaptions(prev => [...prev, ...chunkResult.captions]);
-      }
-      
-      // Combine all results
-      const combinedResult = {
-        transcription: results.map(r => r.transcription).join('\n\n'),
-        captions: results.map(r => r.captions).flat(),
-        metadata: {
-          wordCount: totalWords,
-          duration: totalDuration,
-          language: results[0]?.language || 'english',
-          captionSegments: allCaptions.length
-        }
-      };
-      
-      setCaptions(combinedResult);
-      setChunkedMetadata(combinedResult.metadata);
-      
-      console.log('Chunked processing completed:', combinedResult.metadata);
-      
-    } catch (error) {
-      console.error('Error in chunked processing:', error);
-      setTranscriptionError(`Chunked processing failed: ${error.message}`);
-    } finally {
-      setIsChunkedProcessing(false);
-      setChunkProgress(0);
-      setCurrentChunk(0);
-      setTotalChunks(0);
-    }
-  };
 
-  // Process a single audio chunk
-  const processSingleChunk = async (chunk, chunkIndex) => {
-    // Convert chunk to base64
-    const arrayBuffer = await chunk.blob.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
-    
-    let binary = '';
-    const len = uint8Array.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(uint8Array[i]);
-    }
-    const base64Audio = btoa(binary);
-    
-    // Call transcription API for this chunk
-    const apiResponse = await fetch('/api/transcribe', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        audioData: base64Audio,
-        audioFormat: 'mp3',
-        quality: transcriptionQuality,
-        chunkIndex,
-        isChunk: true
-      }),
-    });
-    
-    if (!apiResponse.ok) {
-      const errorData = await apiResponse.json();
-      throw new Error(`Chunk ${chunkIndex + 1} failed: ${errorData.error || 'Unknown error'}`);
-    }
-    
-    const data = await apiResponse.json();
-    
-    // Adjust timestamps for chunk position
-    const adjustedCaptions = data.captions.map(caption => ({
-      ...caption,
-      start: caption.start + chunk.startTime,
-      end: caption.end + chunk.startTime
-    }));
-    
-    return {
-      transcription: data.transcription,
-      captions: adjustedCaptions,
-      wordCount: data.metadata?.wordCount || 0,
-      duration: data.metadata?.duration || 0,
-      language: data.metadata?.language || 'english'
-    };
-  };
+
+
 
   const extractAudio = async (input) => {
     try {
@@ -748,7 +558,7 @@ export default function Home() {
         } catch (parseError) {
           // Handle cases where response is not JSON
           if (apiResponse.status === 413) {
-            setTranscriptionError('File too large for direct processing. The system will automatically use chunked processing for files over 75MB.');
+            setTranscriptionError('File too large for direct processing. Please use a smaller file or contact support for assistance.');
             return;
           }
           errorData = { error: 'Unknown error occurred' };
@@ -756,7 +566,7 @@ export default function Home() {
         
         // Handle specific error types
         if (apiResponse.status === 413) {
-          setTranscriptionError('File too large for direct processing. The system will automatically use chunked processing for files over 75MB.');
+          setTranscriptionError('File too large for direct processing. Please use a smaller file or contact support for assistance.');
           return;
         }
         
@@ -1566,22 +1376,22 @@ export default function Home() {
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
             <div className="mb-2 flex justify-between text-sm text-gray-600">
               <span>Processing large file with server-side chunking...</span>
-              <span>{Math.round(chunkProgress)}%</span>
+              <span>{Math.round(transcriptionProgress)}%</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
               <div
                 className="bg-green-600 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${chunkProgress}%` }}
+                style={{ width: `${transcriptionProgress}%` }}
               ></div>
             </div>
             <div className="text-sm text-gray-600 space-y-1">
               <div className="flex justify-between">
-                <span>Current Chunk:</span>
-                <span>{currentChunk} / {totalChunks}</span>
+                <span>Status:</span>
+                <span>Processing on server</span>
               </div>
               <div className="flex justify-between">
                 <span>Overall Progress:</span>
-                <span>{Math.round(chunkProgress)}%</span>
+                <span>{Math.round(transcriptionProgress)}%</span>
               </div>
             </div>
             <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded text-sm text-green-700">

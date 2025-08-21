@@ -83,7 +83,7 @@ export async function POST(request) {
     
     if (audioSize > maxSize) {
       return NextResponse.json({ 
-        error: `Audio file too large (${Math.round(audioSize / 1024 / 1024)}MB). Maximum allowed size is 500MB. For larger files, the client will automatically use chunked processing.` 
+        error: `Audio file too large (${Math.round(audioSize / 1024 / 1024)}MB). Maximum allowed size is 500MB. For larger files, please use the chunked processing option.` 
       }, { status: 413 });
     }
 
