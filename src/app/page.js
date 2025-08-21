@@ -182,7 +182,110 @@ export default function Home() {
     }
   };
 
-  // Process audio chunk by chunk
+  // Process large files using server-side chunking
+  const processLargeFileWithServer = async (audioBlob) => {
+    setIsTranscribing(true);
+    setTranscriptionProgress(0);
+    setTranscriptionError(null);
+    setCaptions(null);
+
+    try {
+      console.log('Starting server-side chunked processing...');
+      setTranscriptionProgress(10);
+
+      // Convert audio blob to base64
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+      
+      let binary = '';
+      const len = uint8Array.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(uint8Array[i]);
+      }
+      const base64Audio = btoa(binary);
+      
+      console.log('Base64 conversion completed, length:', base64Audio.length);
+      setTranscriptionProgress(20);
+
+      // Call server-side chunked transcription API
+      const apiResponse = await fetch('/api/transcribe-chunked', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          audioData: base64Audio,
+          audioFormat: 'mp3',
+          quality: transcriptionQuality
+        }),
+      });
+
+      if (apiResponse.status === 401) {
+        window.location.href = `/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
+
+      if (!apiResponse.ok) {
+        let errorData;
+        try {
+          errorData = await apiResponse.json();
+        } catch (parseError) {
+          errorData = { error: 'Unknown error occurred' };
+        }
+        
+        throw new Error(errorData.error || 'Failed to process large file');
+      }
+
+      const data = await apiResponse.json();
+      
+      setCaptions({
+        transcription: data.transcription,
+        captions: data.captions,
+        formats: data.formats,
+        metadata: data.metadata
+      });
+      
+      // Save project ID for database integration
+      if (data.projectId) {
+        setCurrentProjectId(data.projectId);
+        console.log('Project saved with ID:', data.projectId);
+      }
+      
+      setTranscriptionProgress(100);
+      setTranscriptionStatus('Large file transcription completed successfully!');
+      
+      // Refresh user usage
+      try {
+        const userRes = await fetch('/api/user/me', { credentials: 'include' });
+        if (userRes.ok) {
+          const userData = await userRes.json();
+          if (userData.success) {
+            setUser(userData.user);
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new Event('auth:changed'));
+            }
+          }
+        }
+      } catch {}
+      
+      console.log('Server-side chunked processing completed:', {
+        wordCount: data.metadata.wordCount,
+        duration: data.metadata.duration,
+        language: data.metadata.language,
+        captionSegments: data.metadata.captionSegments,
+        chunksProcessed: data.metadata.chunksProcessed
+      });
+      
+    } catch (err) {
+      console.error('Error in server-side chunked processing:', err);
+      setTranscriptionError(err.message || 'Failed to process large file. Please try again.');
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  // Process audio chunk by chunk (legacy client-side)
   const processAudioChunks = async (chunks) => {
     setIsChunkedProcessing(true);
     setTotalChunks(chunks.length);
@@ -550,14 +653,10 @@ export default function Home() {
       // Check file size and decide on processing method
       const maxSize = 75 * 1024 * 1024; // 75MB limit for single processing
       if (audioBlob.size > maxSize) {
-        console.log(`Large file detected (${Math.round(audioBlob.size / 1024 / 1024)}MB), using chunked processing...`);
+        console.log(`Large file detected (${Math.round(audioBlob.size / 1024 / 1024)}MB), using server-side chunked processing...`);
         
-        // Use chunked processing for large files
-        const chunks = await splitAudioIntoChunks(audioBlob);
-        console.log(`Split into ${chunks.length} chunks for processing`);
-        
-        // Process chunks
-        await processAudioChunks(chunks);
+        // Use server-side chunked processing for large files
+        await processLargeFileWithServer(audioBlob);
         return;
       }
       
@@ -1462,11 +1561,11 @@ export default function Home() {
           </div>
         )}
 
-        {/* Chunked Processing Progress */}
-        {isChunkedProcessing && (
+        {/* Server-Side Chunked Processing Progress */}
+        {isTranscribing && (
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
             <div className="mb-2 flex justify-between text-sm text-gray-600">
-              <span>Processing large file in chunks...</span>
+              <span>Processing large file with server-side chunking...</span>
               <span>{Math.round(chunkProgress)}%</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
@@ -1486,14 +1585,14 @@ export default function Home() {
               </div>
             </div>
             <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded text-sm text-green-700">
-              <p><strong>Large File Processing:</strong> Your file is being processed in chunks for optimal performance.</p>
+              <p><strong>Server-Side Chunked Processing:</strong> Your large file is being processed on our servers for optimal performance.</p>
               <div className="mt-2 text-xs">
                 <p><strong>What's happening:</strong></p>
                 <ul className="list-disc list-inside space-y-1 mt-1">
-                  <li>File split into {totalChunks} manageable chunks</li>
-                  <li>Each chunk processed individually for accuracy</li>
-                  <li>Results automatically combined for seamless output</li>
-                  <li>Timestamps properly synchronized across chunks</li>
+                  <li>File automatically split into optimal chunks</li>
+                  <li>Each chunk processed with Whisper AI</li>
+                  <li>Results combined with perfect timestamp synchronization</li>
+                  <li>Professional-grade processing on our infrastructure</li>
                 </ul>
               </div>
             </div>
