@@ -24,6 +24,21 @@ export async function POST(request) {
   const startTime = Date.now();
   
   try {
+    // Check if FFmpeg tools are available
+    let ffmpegAvailable = false;
+    try {
+      await execAsync('ffmpeg -version');
+      await execAsync('ffprobe -version');
+      ffmpegAvailable = true;
+      console.log('FFmpeg tools are available');
+    } catch (ffmpegError) {
+      console.warn('FFmpeg tools not available:', ffmpegError.message);
+      console.warn('Audio chunking will be limited. For best results, install FFmpeg:');
+      console.warn('  macOS: brew install ffmpeg');
+      console.warn('  Ubuntu: sudo apt install ffmpeg');
+      console.warn('  Windows: Download from https://ffmpeg.org/');
+    }
+    
     let user = null;
     
     // Try NextAuth session first
@@ -133,10 +148,24 @@ export async function POST(request) {
       
       // Get audio duration using ffprobe
       console.log('Getting audio duration with ffprobe...');
-      const { stdout: durationOutput } = await execAsync(`ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`);
-      const duration = parseFloat(durationOutput.trim()) || 300;
+      let duration = 300; // Default fallback duration
       
-      console.log('Audio duration:', duration, 'seconds');
+      try {
+        const { stdout: durationOutput } = await execAsync(`ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`);
+        duration = parseFloat(durationOutput.trim()) || 300;
+        console.log('Audio duration from ffprobe:', duration, 'seconds');
+      } catch (ffprobeError) {
+        console.warn('FFprobe not available, using fallback duration calculation:', ffprobeError.message);
+        
+        // Fallback: estimate duration based on file size
+        // MP3 at 128kbps: ~1MB per minute
+        const fileSizeMB = estimatedOriginalSize / (1024 * 1024);
+        duration = Math.ceil(fileSizeMB * 0.75); // Rough estimate: 1MB ≈ 0.75 minutes
+        console.log('Estimated duration from file size:', duration, 'seconds');
+        
+        // Ensure reasonable bounds
+        duration = Math.max(60, Math.min(duration, 7200)); // Between 1 minute and 2 hours
+      }
       
       // Calculate optimal chunk size based on file size
       // For very large files, use smaller chunks to avoid memory issues
@@ -162,20 +191,39 @@ export async function POST(request) {
         
         console.log(`Processing chunk ${i + 1}/${numChunks}: ${startTime}s to ${endTime}s`);
         
-        // Extract chunk using ffmpeg with optimized settings
-        await execAsync(`ffmpeg -i "${inputPath}" -ss ${startTime} -t ${endTime - startTime} -ac 1 -ar 16000 -ab 128k -acodec mp3 -y "${chunkPath}"`);
-        
-        // Get chunk file size
-        const chunkStats = fs.statSync(chunkPath);
-        chunks.push({
-          index: i,
-          startTime,
-          endTime,
-          path: chunkPath,
-          size: chunkStats.size
-        });
-        
-        console.log(`Chunk ${i + 1} created: ${Math.round(chunkStats.size / 1024 / 1024 * 100) / 100}MB`);
+        try {
+          // Extract chunk using ffmpeg with optimized settings
+          await execAsync(`ffmpeg -i "${inputPath}" -ss ${startTime} -t ${endTime - startTime} -ac 1 -ar 16000 -ab 128k -acodec mp3 -y "${chunkPath}"`);
+          
+          // Get chunk file size
+          const chunkStats = fs.statSync(chunkPath);
+          chunks.push({
+            index: i,
+            startTime,
+            endTime,
+            path: chunkPath,
+            size: chunkStats.size
+          });
+          
+          console.log(`Chunk ${i + 1} created: ${Math.round(chunkStats.size / 1024 / 1024 * 100) / 100}MB`);
+        } catch (ffmpegError) {
+          console.error(`FFmpeg error creating chunk ${i + 1}:`, ffmpegError.message);
+          
+          // If ffmpeg fails, try to use the original file as a single chunk
+          if (i === 0) {
+            console.log('FFmpeg not available, using original file as single chunk');
+            chunks.push({
+              index: 0,
+              startTime: 0,
+              endTime: duration,
+              path: inputPath,
+              size: estimatedOriginalSize
+            });
+            break; // Only create one chunk
+          } else {
+            throw new Error(`Failed to create audio chunks: ${ffmpegError.message}. Please ensure FFmpeg is installed.`);
+          }
+        }
       }
       
       console.log('Audio splitting completed');
@@ -358,7 +406,9 @@ export async function POST(request) {
           wordCount: totalWords,
           captionSegments: allCaptions.length,
           chunksProcessed: chunks.length,
-          originalFileSize: Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100 + 'MB'
+          originalFileSize: Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100 + 'MB',
+          ffmpegAvailable: ffmpegAvailable,
+          processingNote: ffmpegAvailable ? 'Audio was processed with optimal chunking' : 'Audio was processed as a single chunk (FFmpeg not available)'
         },
         projectId: savedProject?._id || null
       });
@@ -407,6 +457,14 @@ export async function POST(request) {
     if (error.message && error.message.includes('timeout')) {
       return NextResponse.json({ 
         error: 'Processing timeout. The file is too large to process within the time limit. Please try with a smaller file.' 
+      }, { status: 500 });
+    }
+    
+    // Check for FFmpeg-related errors
+    if (error.message && (error.message.includes('ffmpeg') || error.message.includes('ffprobe'))) {
+      return NextResponse.json({ 
+        error: 'Audio processing tools not available. Please contact support to install FFmpeg for optimal audio processing.',
+        suggestion: 'For immediate use, try uploading a smaller file or contact support to enable audio chunking.'
       }, { status: 500 });
     }
     

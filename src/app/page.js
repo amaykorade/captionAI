@@ -226,7 +226,13 @@ export default function Home() {
       }
       
       setTranscriptionProgress(100);
-      setTranscriptionStatus('Large file transcription completed successfully!');
+      
+      // Show appropriate status message based on FFmpeg availability
+      if (data.metadata?.ffmpegAvailable === false) {
+        setTranscriptionStatus('Large file transcription completed! (Note: Audio was processed as a single chunk - install FFmpeg for optimal chunking)');
+      } else {
+        setTranscriptionStatus('Large file transcription completed successfully!');
+      }
       
       // Refresh user usage
       try {
@@ -251,6 +257,15 @@ export default function Home() {
         originalFileSize: data.metadata?.originalFileSize
       });
       
+      // Show helpful message about FFmpeg if not available
+      if (data.metadata?.ffmpegAvailable === false) {
+        console.log('Note: FFmpeg not available - audio was processed as a single chunk');
+        console.log('For optimal processing of large files, install FFmpeg:');
+        console.log('  macOS: brew install ffmpeg');
+        console.log('  Ubuntu: sudo apt install ffmpeg');
+        console.log('  Windows: Download from https://ffmpeg.org/');
+      }
+      
       console.log('=== SERVER-SIDE CHUNKED PROCESSING COMPLETED ===');
       
     } catch (err) {
@@ -262,6 +277,135 @@ export default function Home() {
     } finally {
       setIsTranscribing(false);
     }
+  };
+
+  // Process files using regular API (for smaller files)
+  const processWithRegularAPI = async (audioBlob) => {
+    setTranscriptionProgress(10);
+
+    // OPTIMIZATION: Compress audio using FFmpeg for faster processing
+    console.log('Optimizing audio for better transcription quality...');
+    const ffmpeg = await initFFmpeg();
+    
+    // Write original audio to FFmpeg
+    await ffmpeg.writeFile('input.mp3', await fetchFile(audioBlob));
+    setTranscriptionProgress(15);
+    
+    // Better audio optimization: maintain quality while optimizing for Whisper
+    await ffmpeg.exec([
+      '-i', 'input.mp3',
+      '-ac', '1',           // Mono audio (better for speech recognition)
+      '-ar', '16000',       // 16kHz sample rate (Whisper optimal)
+      '-ab', '128k',        // Higher bitrate for better quality (was 64k)
+      '-acodec', 'mp3',     // MP3 codec
+      '-af', 'highpass=f=200,lowpass=f=8000', // Filter frequencies for speech
+      'optimized.mp3'
+    ]);
+    setTranscriptionProgress(20);
+    
+    // Read optimized audio
+    const optimizedData = await ffmpeg.readFile('optimized.mp3');
+    const optimizedBlob = new Blob([optimizedData], { type: 'audio/mp3' });
+    
+    console.log('Optimized audio size:', optimizedBlob.size, 'bytes');
+    console.log('Size reduction:', Math.round((1 - optimizedBlob.size / audioBlob.size) * 100), '%');
+    
+    // Clean up FFmpeg files
+    await ffmpeg.deleteFile('input.mp3');
+    await ffmpeg.deleteFile('optimized.mp3');
+    
+    setTranscriptionProgress(25);
+
+    // Convert optimized audio blob to base64 more efficiently
+    const arrayBuffer = await optimizedBlob.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+    
+    // Use a more efficient base64 conversion
+    let binary = '';
+    const len = uint8Array.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(uint8Array[i]);
+    }
+    const base64Audio = btoa(binary);
+    
+    console.log('Base64 conversion completed, length:', base64Audio.length);
+    console.log('Base64 size in MB:', Math.round(base64Audio.length / 1024 / 1024 * 100) / 100);
+    console.log('Size increase from base64 encoding:', Math.round((base64Audio.length / audioBlob.size - 1) * 100), '%');
+    setTranscriptionProgress(30);
+
+    // Add timeout for the API call (2 minutes)
+    const timeoutDuration = 120000; // 2 minutes
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Transcription timeout. Please try again with a shorter audio file.')), timeoutDuration);
+    });
+
+    // Call transcription API with timeout and abort controller
+    const apiResponse = await Promise.race([
+      fetch('/api/transcribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          audioData: base64Audio,
+          audioFormat: 'mp3',
+          quality: transcriptionQuality
+        }),
+        signal: controller.signal,
+      }),
+      timeoutPromise
+    ]);
+
+    if (apiResponse.status === 401) {
+      window.location.href = `/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
+      return;
+    }
+
+    if (!apiResponse.ok) {
+      let errorData;
+      try {
+        errorData = await apiResponse.json();
+      } catch (parseError) {
+        errorData = { error: 'Unknown error occurred' };
+      }
+      
+      throw new Error(errorData.error || 'Failed to transcribe audio');
+    }
+
+    const data = await apiResponse.json();
+    
+    setCaptions({
+      transcription: data.transcription,
+      captions: data.captions,
+      formats: data.formats,
+      metadata: data.metadata
+    });
+    
+    // Save project ID for database integration
+    if (data.projectId) {
+      setCurrentProjectId(data.projectId);
+      console.log('Project saved with ID:', data.projectId);
+    }
+    
+    setTranscriptionProgress(100);
+    setTranscriptionStatus('Transcription completed successfully!');
+    
+    // Refresh user usage
+    try {
+      const userRes = await fetch('/api/user/me', { credentials: 'include' });
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        if (userData.success) {
+          setUser(userData.user);
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event('auth:changed'));
+          }
+        }
+      }
+    } catch {}
+    
+    console.log('Regular API processing completed successfully');
   };
 
 
@@ -514,15 +658,15 @@ export default function Home() {
       console.log('Original audio blob size:', audioBlob.size, 'bytes');
       
       // Check file size and decide on processing method
-      // Base64 encoding increases size by ~33%, so we need to account for this
-      // For chunked processing, we want to use it for files that will be >100MB after base64 encoding
-      const maxSizeForSingleProcessing = 75 * 1024 * 1024; // 75MB limit for single processing
+      // Use a more intelligent routing system for better reliability
+      const maxSizeForSingleProcessing = 50 * 1024 * 1024; // 50MB limit for single processing
       const estimatedBase64Size = audioBlob.size * 1.33; // Estimate base64 size
       
       console.log('Original file size:', Math.round(audioBlob.size / 1024 / 1024 * 100) / 100, 'MB');
       console.log('Estimated base64 size:', Math.round(estimatedBase64Size / 1024 / 1024 * 100) / 100, 'MB');
       
-      if (audioBlob.size > maxSizeForSingleProcessing) {
+      // Smart routing: use chunked processing for files that might cause issues
+      if (audioBlob.size > maxSizeForSingleProcessing || estimatedBase64Size > 100 * 1024 * 1024) {
         console.log(`Large file detected (${Math.round(audioBlob.size / 1024 / 1024)}MB), using server-side chunked processing...`);
         console.log(`Estimated base64 size will be ${Math.round(estimatedBase64Size / 1024 / 1024)}MB`);
         
@@ -531,161 +675,25 @@ export default function Home() {
         return;
       }
       
-      setTranscriptionProgress(10);
-
-      // OPTIMIZATION: Compress audio using FFmpeg for faster processing
-      console.log('Optimizing audio for better transcription quality...');
-      const ffmpeg = await initFFmpeg();
-      
-      // Write original audio to FFmpeg
-      await ffmpeg.writeFile('input.mp3', await fetchFile(audioBlob));
-      setTranscriptionProgress(15);
-      
-      // Better audio optimization: maintain quality while optimizing for Whisper
-      await ffmpeg.exec([
-        '-i', 'input.mp3',
-        '-ac', '1',           // Mono audio (better for speech recognition)
-        '-ar', '16000',       // 16kHz sample rate (Whisper optimal)
-        '-ab', '128k',        // Higher bitrate for better quality (was 64k)
-        '-acodec', 'mp3',     // MP3 codec
-        '-af', 'highpass=f=200,lowpass=f=8000', // Filter frequencies for speech
-        'optimized.mp3'
-      ]);
-      setTranscriptionProgress(20);
-      
-      // Read optimized audio
-      const optimizedData = await ffmpeg.readFile('optimized.mp3');
-      const optimizedBlob = new Blob([optimizedData], { type: 'audio/mp3' });
-      
-      console.log('Optimized audio size:', optimizedBlob.size, 'bytes');
-      console.log('Size reduction:', Math.round((1 - optimizedBlob.size / audioBlob.size) * 100), '%');
-      
-      // Clean up FFmpeg files
-      await ffmpeg.deleteFile('input.mp3');
-      await ffmpeg.deleteFile('optimized.mp3');
-      
-      setTranscriptionProgress(25);
-
-      // Convert optimized audio blob to base64 more efficiently
-      const arrayBuffer = await optimizedBlob.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-      
-      // Use a more efficient base64 conversion
-      let binary = '';
-      const len = uint8Array.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(uint8Array[i]);
-      }
-      const base64Audio = btoa(binary);
-      
-      console.log('Base64 conversion completed, length:', base64Audio.length);
-      console.log('Base64 size in MB:', Math.round(base64Audio.length / 1024 / 1024 * 100) / 100);
-      console.log('Size increase from base64 encoding:', Math.round((base64Audio.length / audioBlob.size - 1) * 100), '%');
-      setTranscriptionProgress(30);
-
-      // Add timeout for the API call (reduced from 5 minutes to 2 minutes)
-      const timeoutDuration = 120000; // 2 minutes
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Transcription timeout. Please try again with a shorter audio file.')), timeoutDuration);
-      });
-
-      // Call transcription API with timeout and abort controller
-      const apiResponse = await Promise.race([
-        fetch('/api/transcribe', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-          body: JSON.stringify({
-            audioData: base64Audio,
-            audioFormat: 'mp3',
-            quality: transcriptionQuality
-          }),
-          signal: controller.signal,
-        }),
-        timeoutPromise
-      ]);
-
-      if (apiResponse.status === 401) {
-        window.location.href = `/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
-        return;
-      }
-
-      if (!apiResponse.ok) {
-        let errorData;
-        try {
-          errorData = await apiResponse.json();
-        } catch (parseError) {
-          // Handle cases where response is not JSON
-          if (apiResponse.status === 413) {
-            setTranscriptionError('File too large for direct processing. Please use a smaller file or contact support for assistance.');
-            return;
-          }
-          errorData = { error: 'Unknown error occurred' };
-        }
-        
-        // Handle specific error types
-        if (apiResponse.status === 413) {
-          setTranscriptionError('File too large for direct processing. Please use a smaller file or contact support for assistance.');
-          return;
-        }
-        
-        // Handle usage limit errors specifically
-        if (apiResponse.status === 403 && errorData.requiresUpgrade) {
-          setTranscriptionError(`${errorData.error} Please upgrade your plan to continue.`);
-          // Refresh user data to show updated usage
-          const userRes = await fetch('/api/user/me', { credentials: 'include' });
-          if (userRes.ok) {
-            const userData = await userRes.json();
-            if (userData.success) {
-              setUser(userData.user);
-            }
-          }
-          return;
-        }
-        
-        throw new Error(errorData.error || 'Failed to transcribe audio');
-      }
-
-      const data = await apiResponse.json();
-      
-      setCaptions({
-        transcription: data.transcription,
-        captions: data.captions,
-        formats: data.formats,
-        metadata: data.metadata
-      });
-      
-      // Save project ID for database integration
-      if (data.projectId) {
-        setCurrentProjectId(data.projectId);
-        console.log('Project saved with ID:', data.projectId);
-      }
-      
-      setTranscriptionProgress(100);
-      setTranscriptionStatus('Transcription completed successfully!');
-      
-      // Refresh user usage after a successful transcription so UI disables further uploads on free tier
+      // For smaller files, try regular processing first, with fallback to chunked
       try {
-        const userRes = await fetch('/api/user/me', { credentials: 'include' });
-        if (userRes.ok) {
-          const userData = await userRes.json();
-          if (userData.success) {
-            setUser(userData.user);
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new Event('auth:changed'));
-            }
-          }
-        }
-      } catch {}
+        console.log('Small file detected, using regular API processing...');
+        await processWithRegularAPI(audioBlob);
+      } catch (error) {
+        console.log('Regular API failed, falling back to chunked processing:', error.message);
+        // Fallback to chunked processing if regular API fails
+        await processLargeFileWithServer(audioBlob);
+      }
       
-      console.log('Transcription completed:', {
-        wordCount: data.metadata.wordCount,
-        duration: data.metadata.duration,
-        language: data.metadata.language,
-        captionSegments: data.metadata.captionSegments
-      });
+
+
+
+
+
+
+
+
+
       
     } catch (err) {
       if (err.name === 'AbortError') {
