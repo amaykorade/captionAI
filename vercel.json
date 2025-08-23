@@ -4,7 +4,8 @@
       "maxDuration": 300
     },
     "src/app/api/transcribe-chunked/route.js": {
-      "maxDuration": 600
+      "maxDuration": 600,
+      "maxRequestBodySize": "100mb"
     }
   },
   "headers": [

@@ -81,51 +81,86 @@ export async function POST(request) {
       }, { status: 404 });
     }
 
-    let requestBody;
-    try {
-      requestBody = await request.json();
-    } catch (parseError) {
-      console.error('Failed to parse request body:', parseError);
-      return NextResponse.json({ 
-        error: 'Invalid request format. Please ensure the request contains valid JSON.' 
-      }, { status: 400 });
-    }
+    // Check content type to determine if it's a file upload or base64
+    const contentType = request.headers.get('content-type') || '';
     
-    const { audioData, audioFormat = 'mp3', quality = 'balanced' } = requestBody;
+    let audioBuffer, estimatedOriginalSize, audioFormat;
     
-    if (!audioData) {
-      return NextResponse.json({ error: 'Audio data is required' }, { status: 400 });
-    }
+    if (contentType.includes('multipart/form-data')) {
+      // Handle direct file upload
+      console.log('Processing direct file upload...');
+      
+      const formData = await request.formData();
+      const file = formData.get('file');
+      
+      if (!file) {
+        return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+      }
+      
+      audioBuffer = Buffer.from(await file.arrayBuffer());
+      estimatedOriginalSize = audioBuffer.length;
+      audioFormat = file.name.split('.').pop() || 'mp3';
+      
+      console.log('Direct file upload received:', {
+        fileName: file.name,
+        fileSize: Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100 + 'MB',
+        format: audioFormat
+      });
+      
+    } else {
+      // Handle base64 data (legacy support)
+      console.log('Processing base64 data...');
+      
+      let requestBody;
+      try {
+        requestBody = await request.json();
+      } catch (parseError) {
+        console.error('Failed to parse request body:', parseError);
+        return NextResponse.json({ 
+          error: 'Invalid request format. Please ensure the request contains valid JSON.' 
+        }, { status: 400 });
+      }
+      
+      const { audioData, audioFormat: format = 'mp3', quality = 'balanced' } = requestBody;
+      
+      if (!audioData) {
+        return NextResponse.json({ error: 'Audio data is required' }, { status: 400 });
+      }
 
-    // Check audio data size more accurately
-    // Base64 encoding increases size by ~33%, so we need to account for this
-    const base64Size = audioData.length;
-    const estimatedOriginalSize = Math.ceil(base64Size * 0.75); // More accurate estimation
-    
-    // Set reasonable limits for chunked processing
-    const maxBase64Size = 2 * 1024 * 1024 * 1024; // 2GB base64 data
-    const maxOriginalSize = 1.5 * 1024 * 1024 * 1024; // 1.5GB original file
+      // Check audio data size more accurately
+      const base64Size = audioData.length;
+      estimatedOriginalSize = Math.ceil(base64Size * 0.75); // More accurate estimation
+      
+      // Set reasonable limits for chunked processing
+      const maxBase64Size = 2 * 1024 * 1024 * 1024; // 2GB base64 data
+      const maxOriginalSize = 1.5 * 1024 * 1024 * 1024; // 1.5GB original file
+      
+      console.log('Received base64 data length:', base64Size);
+      console.log('Estimated original file size:', Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100, 'MB');
+      
+      if (base64Size > maxBase64Size) {
+        console.log('File too large - base64 size exceeds limit');
+        return NextResponse.json({ 
+          error: `Audio file too large (${Math.round(base64Size / 1024 / 1024 / 1024 * 100) / 100}GB base64). Maximum allowed size is 2GB base64 data.` 
+        }, { status: 413 });
+      }
+
+      if (estimatedOriginalSize > maxOriginalSize) {
+        console.log('File too large - estimated original size exceeds limit');
+        return NextResponse.json({ 
+          error: `Audio file too large (${Math.round(estimatedOriginalSize / 1024 / 1024 / 1024 * 100) / 100}GB). Maximum allowed size is 1.5GB.` 
+        }, { status: 413 });
+      }
+
+      // Convert base64 to buffer
+      audioBuffer = Buffer.from(audioData, 'base64');
+      audioFormat = format;
+    }
     
     console.log('=== CHUNKED TRANSCRIPTION START ===');
     console.log('User:', user.email);
-    console.log('Received base64 data length:', base64Size);
-    console.log('Estimated original file size:', Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100, 'MB');
     console.log('Memory usage before processing:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
     
-    if (base64Size > maxBase64Size) {
-      console.log('File too large - base64 size exceeds limit');
-      return NextResponse.json({ 
-        error: `Audio file too large (${Math.round(base64Size / 1024 / 1024 / 1024 * 100) / 100}GB base64). Maximum allowed size is 2GB base64 data.` 
-      }, { status: 413 });
-    }
-
-    if (estimatedOriginalSize > maxOriginalSize) {
-      console.log('File too large - estimated original size exceeds limit');
-      return NextResponse.json({ 
-        error: `Audio file too large (${Math.round(estimatedOriginalSize / 1024 / 1024 / 1024 * 100) / 100}GB). Maximum allowed size is 1.5GB.` 
-      }, { status: 413 });
-    }
-
     // Initialize OpenAI client
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
@@ -133,16 +168,19 @@ export async function POST(request) {
 
     // Create temporary files
     const tempDir = os.tmpdir();
-    const inputPath = path.join(tempDir, `input_${Date.now()}.mp3`);
+    const inputPath = path.join(tempDir, `input_${Date.now()}.${audioFormat}`);
     const outputDir = path.join(tempDir, `chunks_${Date.now()}`);
     
     try {
       // Create output directory
       fs.mkdirSync(outputDir, { recursive: true });
       
-      // Write input file in chunks to avoid memory issues
+      // Write input file to disk
       console.log('Writing input file to disk...');
-      await writeBase64ToFile(audioData, inputPath);
+      await pipeline(
+        Readable.from(audioBuffer),
+        fs.createWriteStream(inputPath)
+      );
       console.log('Input file written:', inputPath);
       console.log('Memory usage after writing file:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
       
@@ -187,13 +225,13 @@ export async function POST(request) {
       for (let i = 0; i < numChunks; i++) {
         const startTime = i * chunkDuration;
         const endTime = Math.min((i + 1) * chunkDuration, duration);
-        const chunkPath = path.join(outputDir, `chunk_${i}.mp3`);
+        const chunkPath = path.join(outputDir, `chunk_${i}.${audioFormat}`);
         
         console.log(`Processing chunk ${i + 1}/${numChunks}: ${startTime}s to ${endTime}s`);
         
         try {
           // Extract chunk using ffmpeg with optimized settings
-          await execAsync(`ffmpeg -i "${inputPath}" -ss ${startTime} -t ${endTime - startTime} -ac 1 -ar 16000 -ab 128k -acodec mp3 -y "${chunkPath}"`);
+          await execAsync(`ffmpeg -i "${inputPath}" -ss ${startTime} -t ${endTime - startTime} -ac 1 -ar 16000 -ab 128k -acodec ${audioFormat} -y "${chunkPath}"`);
           
           // Get chunk file size
           const chunkStats = fs.statSync(chunkPath);
@@ -244,8 +282,8 @@ export async function POST(request) {
           const chunkBuffer = fs.readFileSync(chunk.path);
           
           // Create file stream for OpenAI
-          const chunkBlob = new Blob([chunkBuffer], { type: 'audio/mp3' });
-          const chunkFile = new File([chunkBlob], `chunk_${i}.mp3`, { type: 'audio/mp3' });
+          const chunkBlob = new Blob([chunkBuffer], { type: `audio/${audioFormat}` });
+          const chunkFile = new File([chunkBlob], `chunk_${i}.${audioFormat}`, { type: `audio/${audioFormat}` });
           
           // Transcribe chunk with Whisper
           console.log(`Sending chunk ${i + 1} to OpenAI Whisper...`);
@@ -474,20 +512,7 @@ export async function POST(request) {
   }
 }
 
-// Helper function to write base64 data to file in chunks to avoid memory issues
-async function writeBase64ToFile(base64Data, filePath) {
-  return new Promise((resolve, reject) => {
-    const buffer = Buffer.from(base64Data, 'base64');
-    const writeStream = fs.createWriteStream(filePath);
-    
-    writeStream.on('error', reject);
-    writeStream.on('finish', resolve);
-    
-    // Write buffer to stream
-    writeStream.write(buffer);
-    writeStream.end();
-  });
-}
+
 
 // Helper functions for caption generation
 function generateSRT(captions) {

@@ -121,38 +121,8 @@ export default function Home() {
       console.log('Audio blob size in MB:', Math.round(audioBlob.size / 1024 / 1024 * 100) / 100);
       setTranscriptionProgress(10);
 
-      // Convert audio blob to base64
-      console.log('Converting audio blob to base64...');
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-      
-      // Check if the file is too large for base64 conversion
-      if (uint8Array.byteLength > 2 * 1024 * 1024 * 1024) { // 2GB limit
-        throw new Error('File is too large for processing. Maximum size is 2GB.');
-      }
-      
-      let binary = '';
-      const len = uint8Array.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(uint8Array[i]);
-      }
-      const base64Audio = btoa(binary);
-      
-      // Verify base64 conversion was successful
-      if (!base64Audio || base64Audio.length === 0) {
-        throw new Error('Failed to convert audio to base64 format.');
-      }
-      
-      console.log('Base64 conversion completed');
-      console.log('Base64 data length:', base64Audio.length);
-      console.log('Base64 size in MB:', Math.round(base64Audio.length / 1024 / 1024 * 100) / 100);
-      console.log('Size increase from base64 encoding:', Math.round((base64Audio.length / audioBlob.size - 1) * 100), '%');
-      
-      // Additional check for extremely large base64 data
-      if (base64Audio.length > 2 * 1024 * 1024 * 1024) { // 2GB base64 limit
-        throw new Error(`File too large after base64 conversion (${Math.round(base64Audio.length / 1024 / 1024 / 1024 * 100) / 100}GB). Maximum allowed size is 2GB.`);
-      }
-      
+      // Use direct file upload instead of base64 conversion
+      console.log('Using direct file upload for better performance...');
       setTranscriptionProgress(20);
 
       // Call server-side chunked transcription API
@@ -165,18 +135,15 @@ export default function Home() {
         setTimeout(() => reject(new Error('Chunked transcription timeout. The file is too large to process within the time limit. Please try with a smaller file.')), timeoutDuration);
       });
       
+      // Create FormData for direct file upload
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'audio.mp3');
+      
       const apiResponse = await Promise.race([
         fetch('/api/transcribe-chunked', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
           credentials: 'include',
-          body: JSON.stringify({
-            audioData: base64Audio,
-            audioFormat: 'mp3',
-            quality: transcriptionQuality
-          }),
+          body: formData, // Send file directly, not base64
         }),
         timeoutPromise
       ]);
