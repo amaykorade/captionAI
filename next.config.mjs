@@ -20,11 +20,6 @@ const nextConfig = {
   
   // Ensure compatibility with FFmpeg.wasm
   serverExternalPackages: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
-  
-  // Configure API routes for large file processing
-  experimental: {
-    serverComponentsExternalPackages: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
-  },
 };
 
 export default nextConfig;
