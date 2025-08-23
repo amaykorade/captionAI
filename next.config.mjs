@@ -25,14 +25,6 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
   },
-  
-  // Increase body size limit for large file uploads
-  api: {
-    bodyParser: {
-      sizeLimit: '2gb', // Allow up to 2GB for chunked transcription
-    },
-    responseLimit: false, // No response size limit
-  },
 };
 
 export default nextConfig;
