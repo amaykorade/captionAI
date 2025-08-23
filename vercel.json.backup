@@ -1,8 +1,7 @@
 {
   "functions": {
     "src/app/api/transcribe-chunked/route.js": {
-      "maxDuration": 600,
-      "maxRequestBodySize": "100mb"
+      "maxDuration": 600
     }
   }
 } 
