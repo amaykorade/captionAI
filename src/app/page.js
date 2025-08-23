@@ -116,12 +116,20 @@ export default function Home() {
     setCaptions(null);
 
     try {
-      console.log('Starting server-side chunked processing...');
+      console.log('=== STARTING SERVER-SIDE CHUNKED PROCESSING ===');
+      console.log('Audio blob size:', audioBlob.size, 'bytes');
+      console.log('Audio blob size in MB:', Math.round(audioBlob.size / 1024 / 1024 * 100) / 100);
       setTranscriptionProgress(10);
 
       // Convert audio blob to base64
+      console.log('Converting audio blob to base64...');
       const arrayBuffer = await audioBlob.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
+      
+      // Check if the file is too large for base64 conversion
+      if (uint8Array.byteLength > 2 * 1024 * 1024 * 1024) { // 2GB limit
+        throw new Error('File is too large for processing. Maximum size is 2GB.');
+      }
       
       let binary = '';
       const len = uint8Array.byteLength;
@@ -130,24 +138,56 @@ export default function Home() {
       }
       const base64Audio = btoa(binary);
       
-      console.log('Base64 conversion completed, length:', base64Audio.length);
+      // Verify base64 conversion was successful
+      if (!base64Audio || base64Audio.length === 0) {
+        throw new Error('Failed to convert audio to base64 format.');
+      }
+      
+      console.log('Base64 conversion completed');
+      console.log('Base64 data length:', base64Audio.length);
+      console.log('Base64 size in MB:', Math.round(base64Audio.length / 1024 / 1024 * 100) / 100);
+      console.log('Size increase from base64 encoding:', Math.round((base64Audio.length / audioBlob.size - 1) * 100), '%');
+      
+      // Additional check for extremely large base64 data
+      if (base64Audio.length > 2 * 1024 * 1024 * 1024) { // 2GB base64 limit
+        throw new Error(`File too large after base64 conversion (${Math.round(base64Audio.length / 1024 / 1024 / 1024 * 100) / 100}GB). Maximum allowed size is 2GB.`);
+      }
+      
       setTranscriptionProgress(20);
 
       // Call server-side chunked transcription API
-      const apiResponse = await fetch('/api/transcribe-chunked', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          audioData: base64Audio,
-          audioFormat: 'mp3',
-          quality: transcriptionQuality
-        }),
+      console.log('Calling server-side chunked transcription API...');
+      setTranscriptionStatus('Processing large file with server-side chunking...');
+      
+      // Add timeout for the chunked API call (10 minutes for large files)
+      const timeoutDuration = 600000; // 10 minutes
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Chunked transcription timeout. The file is too large to process within the time limit. Please try with a smaller file.')), timeoutDuration);
       });
+      
+      const apiResponse = await Promise.race([
+        fetch('/api/transcribe-chunked', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            audioData: base64Audio,
+            audioFormat: 'mp3',
+            quality: transcriptionQuality
+          }),
+        }),
+        timeoutPromise
+      ]);
+
+      console.log('API response status:', apiResponse.status);
+      console.log('API response ok:', apiResponse.ok);
+      setTranscriptionProgress(30);
+      setTranscriptionStatus('File uploaded successfully, processing chunks...');
 
       if (apiResponse.status === 401) {
+        console.log('Authentication required, redirecting to login...');
         window.location.href = `/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
         return;
       }
@@ -156,13 +196,20 @@ export default function Home() {
         let errorData;
         try {
           errorData = await apiResponse.json();
+          console.log('Error response data:', errorData);
         } catch (parseError) {
+          console.error('Failed to parse error response:', parseError);
           errorData = { error: 'Unknown error occurred' };
         }
         
-        throw new Error(errorData.error || 'Failed to process large file');
+        const errorMessage = errorData.error || 'Failed to process large file';
+        console.error('API error:', errorMessage);
+        throw new Error(errorMessage);
       }
 
+      console.log('Parsing successful response...');
+      setTranscriptionProgress(60);
+      setTranscriptionStatus('Transcription completed, generating captions...');
       const data = await apiResponse.json();
       
       setCaptions({
@@ -195,16 +242,22 @@ export default function Home() {
         }
       } catch {}
       
-      console.log('Server-side chunked processing completed:', {
-        wordCount: data.metadata.wordCount,
-        duration: data.metadata.duration,
-        language: data.metadata.language,
-        captionSegments: data.metadata.captionSegments,
-        chunksProcessed: data.metadata.chunksProcessed
+      console.log('Server-side chunked processing completed successfully:', {
+        wordCount: data.metadata?.wordCount,
+        duration: data.metadata?.duration,
+        language: data.metadata?.language,
+        captionSegments: data.metadata?.captionSegments,
+        chunksProcessed: data.metadata?.chunksProcessed,
+        originalFileSize: data.metadata?.originalFileSize
       });
       
+      console.log('=== SERVER-SIDE CHUNKED PROCESSING COMPLETED ===');
+      
     } catch (err) {
-      console.error('Error in server-side chunked processing:', err);
+      console.error('=== ERROR IN SERVER-SIDE CHUNKED PROCESSING ===');
+      console.error('Error details:', err);
+      console.error('Error message:', err.message);
+      console.error('Error stack:', err.stack);
       setTranscriptionError(err.message || 'Failed to process large file. Please try again.');
     } finally {
       setIsTranscribing(false);
@@ -461,9 +514,17 @@ export default function Home() {
       console.log('Original audio blob size:', audioBlob.size, 'bytes');
       
       // Check file size and decide on processing method
-      const maxSize = 75 * 1024 * 1024; // 75MB limit for single processing
-      if (audioBlob.size > maxSize) {
+      // Base64 encoding increases size by ~33%, so we need to account for this
+      // For chunked processing, we want to use it for files that will be >100MB after base64 encoding
+      const maxSizeForSingleProcessing = 75 * 1024 * 1024; // 75MB limit for single processing
+      const estimatedBase64Size = audioBlob.size * 1.33; // Estimate base64 size
+      
+      console.log('Original file size:', Math.round(audioBlob.size / 1024 / 1024 * 100) / 100, 'MB');
+      console.log('Estimated base64 size:', Math.round(estimatedBase64Size / 1024 / 1024 * 100) / 100, 'MB');
+      
+      if (audioBlob.size > maxSizeForSingleProcessing) {
         console.log(`Large file detected (${Math.round(audioBlob.size / 1024 / 1024)}MB), using server-side chunked processing...`);
+        console.log(`Estimated base64 size will be ${Math.round(estimatedBase64Size / 1024 / 1024)}MB`);
         
         // Use server-side chunked processing for large files
         await processLargeFileWithServer(audioBlob);
@@ -1387,7 +1448,7 @@ export default function Home() {
             <div className="text-sm text-gray-600 space-y-1">
               <div className="flex justify-between">
                 <span>Status:</span>
-                <span>Processing on server</span>
+                <span>{transcriptionStatus}</span>
               </div>
               <div className="flex justify-between">
                 <span>Overall Progress:</span>

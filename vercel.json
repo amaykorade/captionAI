@@ -2,11 +2,23 @@
   "functions": {
     "src/app/api/transcribe/route.js": {
       "maxDuration": 300
+    },
+    "src/app/api/transcribe-chunked/route.js": {
+      "maxDuration": 600
     }
   },
   "headers": [
     {
       "source": "/api/transcribe",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
+      ]
+    },
+    {
+      "source": "/api/transcribe-chunked",
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",

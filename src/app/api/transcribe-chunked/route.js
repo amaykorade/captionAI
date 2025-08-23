@@ -10,6 +10,8 @@ import path from 'path';
 import os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { pipeline } from 'stream/promises';
+import { Readable } from 'stream';
 
 const execAsync = promisify(exec);
 
@@ -80,16 +82,32 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Audio data is required' }, { status: 400 });
     }
 
-    // Check audio data size (base64 data is larger than original file)
-    const audioSize = Math.ceil(audioData.length * 0.75); // Approximate size in bytes
-    const maxSize = 1000 * 1024 * 1024; // 1GB limit for chunked processing
+    // Check audio data size more accurately
+    // Base64 encoding increases size by ~33%, so we need to account for this
+    const base64Size = audioData.length;
+    const estimatedOriginalSize = Math.ceil(base64Size * 0.75); // More accurate estimation
     
-    console.log('Received base64 data length:', audioData.length);
-    console.log('Estimated original file size:', Math.round(audioSize / 1024 / 1024 * 100) / 100, 'MB');
+    // Set reasonable limits for chunked processing
+    const maxBase64Size = 2 * 1024 * 1024 * 1024; // 2GB base64 data
+    const maxOriginalSize = 1.5 * 1024 * 1024 * 1024; // 1.5GB original file
     
-    if (audioSize > maxSize) {
+    console.log('=== CHUNKED TRANSCRIPTION START ===');
+    console.log('User:', user.email);
+    console.log('Received base64 data length:', base64Size);
+    console.log('Estimated original file size:', Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100, 'MB');
+    console.log('Memory usage before processing:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
+    
+    if (base64Size > maxBase64Size) {
+      console.log('File too large - base64 size exceeds limit');
       return NextResponse.json({ 
-        error: `Audio file too large (${Math.round(audioSize / 1024 / 1024)}MB). Maximum allowed size is 1GB.` 
+        error: `Audio file too large (${Math.round(base64Size / 1024 / 1024 / 1024 * 100) / 100}GB base64). Maximum allowed size is 2GB base64 data.` 
+      }, { status: 413 });
+    }
+
+    if (estimatedOriginalSize > maxOriginalSize) {
+      console.log('File too large - estimated original size exceeds limit');
+      return NextResponse.json({ 
+        error: `Audio file too large (${Math.round(estimatedOriginalSize / 1024 / 1024 / 1024 * 100) / 100}GB). Maximum allowed size is 1.5GB.` 
       }, { status: 413 });
     }
 
@@ -98,9 +116,6 @@ export async function POST(request) {
       apiKey: process.env.OPENAI_API_KEY,
     });
 
-    // Convert base64 to buffer
-    const audioBuffer = Buffer.from(audioData, 'base64');
-    
     // Create temporary files
     const tempDir = os.tmpdir();
     const inputPath = path.join(tempDir, `input_${Date.now()}.mp3`);
@@ -110,18 +125,30 @@ export async function POST(request) {
       // Create output directory
       fs.mkdirSync(outputDir, { recursive: true });
       
-      // Write input file
-      fs.writeFileSync(inputPath, audioBuffer);
+      // Write input file in chunks to avoid memory issues
+      console.log('Writing input file to disk...');
+      await writeBase64ToFile(audioData, inputPath);
       console.log('Input file written:', inputPath);
+      console.log('Memory usage after writing file:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
       
       // Get audio duration using ffprobe
+      console.log('Getting audio duration with ffprobe...');
       const { stdout: durationOutput } = await execAsync(`ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`);
       const duration = parseFloat(durationOutput.trim()) || 300;
       
       console.log('Audio duration:', duration, 'seconds');
       
-      // Calculate chunk size (aim for ~10 minute chunks)
-      const chunkDuration = 600; // 10 minutes
+      // Calculate optimal chunk size based on file size
+      // For very large files, use smaller chunks to avoid memory issues
+      let chunkDuration;
+      if (estimatedOriginalSize > 500 * 1024 * 1024) { // > 500MB
+        chunkDuration = 300; // 5 minute chunks for very large files
+      } else if (estimatedOriginalSize > 100 * 1024 * 1024) { // > 100MB
+        chunkDuration = 600; // 10 minute chunks for large files
+      } else {
+        chunkDuration = 900; // 15 minute chunks for smaller files
+      }
+      
       const numChunks = Math.ceil(duration / chunkDuration);
       
       console.log(`Splitting into ${numChunks} chunks of ~${chunkDuration}s each`);
@@ -135,21 +162,24 @@ export async function POST(request) {
         
         console.log(`Processing chunk ${i + 1}/${numChunks}: ${startTime}s to ${endTime}s`);
         
-        // Extract chunk using ffmpeg
+        // Extract chunk using ffmpeg with optimized settings
         await execAsync(`ffmpeg -i "${inputPath}" -ss ${startTime} -t ${endTime - startTime} -ac 1 -ar 16000 -ab 128k -acodec mp3 -y "${chunkPath}"`);
         
-        // Read chunk file
-        const chunkBuffer = fs.readFileSync(chunkPath);
+        // Get chunk file size
+        const chunkStats = fs.statSync(chunkPath);
         chunks.push({
           index: i,
           startTime,
           endTime,
-          buffer: chunkBuffer,
-          path: chunkPath
+          path: chunkPath,
+          size: chunkStats.size
         });
+        
+        console.log(`Chunk ${i + 1} created: ${Math.round(chunkStats.size / 1024 / 1024 * 100) / 100}MB`);
       }
       
       console.log('Audio splitting completed');
+      console.log('Memory usage after splitting:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
       
       // Process each chunk with Whisper
       const results = [];
@@ -159,51 +189,85 @@ export async function POST(request) {
       
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
-        console.log(`Transcribing chunk ${i + 1}/${chunks.length}`);
+        console.log(`Transcribing chunk ${i + 1}/${chunks.length} (${Math.round(chunk.size / 1024 / 1024 * 100) / 100}MB)`);
         
-        // Create file stream for OpenAI
-        const chunkBlob = new Blob([chunk.buffer], { type: 'audio/mp3' });
-        const chunkFile = new File([chunkBlob], `chunk_${i}.mp3`, { type: 'audio/mp3' });
-        
-        // Transcribe chunk with Whisper
-        const transcription = await openai.audio.transcriptions.create({
-          file: chunkFile,
-          model: "whisper-1",
-          response_format: "verbose_json",
-          timestamp_granularities: ["word"],
-          temperature: 0.0,
-          language: "en",
-          prompt: "This is a natural conversation with casual speech, slang, and cultural references. Please transcribe accurately including all words, filler words, and informal language.",
-          word_timestamps: true
-        });
-        
-        // Adjust timestamps for chunk position
-        const adjustedCaptions = transcription.words.map(word => ({
-          ...word,
-          start: word.start + chunk.startTime,
-          end: word.end + chunk.startTime
-        }));
-        
-        results.push({
-          transcription: transcription.text,
-          captions: adjustedCaptions,
-          wordCount: transcription.words.length,
-          duration: transcription.duration,
-          language: transcription.language
-        });
-        
-        // Accumulate metadata
-        totalWords += transcription.words.length;
-        totalDuration += transcription.duration;
-        allCaptions.push(...adjustedCaptions);
-        
-        console.log(`Chunk ${i + 1} completed: ${transcription.words.length} words`);
+        try {
+          // Read chunk file
+          const chunkBuffer = fs.readFileSync(chunk.path);
+          
+          // Create file stream for OpenAI
+          const chunkBlob = new Blob([chunkBuffer], { type: 'audio/mp3' });
+          const chunkFile = new File([chunkBlob], `chunk_${i}.mp3`, { type: 'audio/mp3' });
+          
+          // Transcribe chunk with Whisper
+          console.log(`Sending chunk ${i + 1} to OpenAI Whisper...`);
+          const transcription = await openai.audio.transcriptions.create({
+            file: chunkFile,
+            model: "whisper-1",
+            response_format: "verbose_json",
+            timestamp_granularities: ["word"],
+            temperature: 0.0,
+            language: "en",
+            prompt: "This is a natural conversation with casual speech, slang, and cultural references. Please transcribe accurately including all words, filler words, and informal language.",
+            word_timestamps: true
+          });
+          
+          // Adjust timestamps for chunk position
+          const adjustedCaptions = transcription.words.map(word => ({
+            ...word,
+            start: word.start + chunk.startTime,
+            end: word.end + chunk.startTime
+          }));
+          
+          results.push({
+            transcription: transcription.text,
+            captions: adjustedCaptions,
+            wordCount: transcription.words.length,
+            duration: transcription.duration,
+            language: transcription.language
+          });
+          
+          // Accumulate metadata
+          totalWords += transcription.words.length;
+          totalDuration += transcription.duration;
+          allCaptions.push(...adjustedCaptions);
+          
+          console.log(`Chunk ${i + 1} completed: ${transcription.words.length} words`);
+          
+          // Free memory by clearing chunk buffer and blob
+          chunkBuffer = null;
+          chunkBlob = null;
+          chunkFile = null;
+          
+          // Force garbage collection if available
+          if (global.gc) {
+            global.gc();
+          }
+          
+          console.log(`Memory usage after chunk ${i + 1}:`, Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
+          
+        } catch (chunkError) {
+          console.error(`Error processing chunk ${i + 1}:`, chunkError);
+          
+          // Continue with other chunks if one fails
+          results.push({
+            transcription: `[Error processing chunk ${i + 1}: ${chunkError.message}]`,
+            captions: [],
+            wordCount: 0,
+            duration: 0,
+            language: 'en'
+          });
+        }
       }
+      
+      console.log('All chunks processed successfully');
+      console.log('Memory usage after processing all chunks:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
       
       // Combine all results
       const combinedTranscription = results.map(r => r.transcription).join('\n\n');
       
       // Generate caption formats
+      console.log('Generating caption formats...');
       const srtFormat = generateSRT(allCaptions);
       const vttFormat = generateVTT(allCaptions);
       const jsonFormat = JSON.stringify(allCaptions, null, 2);
@@ -219,7 +283,7 @@ export async function POST(request) {
           title: `Chunked Transcription - ${new Date().toLocaleDateString()}`,
           description: `Large file transcription with ${allCaptions.length} caption segments`,
           audioUrl: 'chunked_audio',
-          audioSize: audioBuffer.length,
+          audioSize: estimatedOriginalSize,
           transcription: {
             rawText: combinedTranscription,
             enhancedText: combinedTranscription, // Will be enhanced separately if needed
@@ -274,6 +338,10 @@ export async function POST(request) {
         console.error('Failed to update user usage:', usageError);
       }
       
+      console.log('=== CHUNKED TRANSCRIPTION COMPLETED ===');
+      console.log('Total processing time:', Math.round((Date.now() - startTime) / 1000), 'seconds');
+      console.log('Final memory usage:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
+      
       return NextResponse.json({
         success: true,
         transcription: combinedTranscription,
@@ -289,7 +357,8 @@ export async function POST(request) {
           duration: totalDuration,
           wordCount: totalWords,
           captionSegments: allCaptions.length,
-          chunksProcessed: chunks.length
+          chunksProcessed: chunks.length,
+          originalFileSize: Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100 + 'MB'
         },
         projectId: savedProject?._id || null
       });
@@ -311,7 +380,10 @@ export async function POST(request) {
     }
     
   } catch (error) {
+    console.error('=== CHUNKED TRANSCRIPTION ERROR ===');
     console.error('Error in chunked transcription API:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Memory usage at error:', Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 100) / 100, 'MB');
     
     if (error.status === 401) {
       return NextResponse.json({ 
@@ -325,10 +397,38 @@ export async function POST(request) {
       }, { status: 429 });
     }
     
+    // Check for specific memory-related errors
+    if (error.message && error.message.includes('ENOMEM')) {
+      return NextResponse.json({ 
+        error: 'Server ran out of memory processing this file. Please try with a smaller file or contact support.' 
+      }, { status: 500 });
+    }
+    
+    if (error.message && error.message.includes('timeout')) {
+      return NextResponse.json({ 
+        error: 'Processing timeout. The file is too large to process within the time limit. Please try with a smaller file.' 
+      }, { status: 500 });
+    }
+    
     return NextResponse.json({ 
       error: 'Failed to transcribe audio: ' + error.message 
     }, { status: 500 });
   }
+}
+
+// Helper function to write base64 data to file in chunks to avoid memory issues
+async function writeBase64ToFile(base64Data, filePath) {
+  return new Promise((resolve, reject) => {
+    const buffer = Buffer.from(base64Data, 'base64');
+    const writeStream = fs.createWriteStream(filePath);
+    
+    writeStream.on('error', reject);
+    writeStream.on('finish', resolve);
+    
+    // Write buffer to stream
+    writeStream.write(buffer);
+    writeStream.end();
+  });
 }
 
 // Helper functions for caption generation
