@@ -90,22 +90,38 @@ export async function POST(request) {
       // Handle direct file upload
       console.log('Processing direct file upload...');
       
-      const formData = await request.formData();
-      const file = formData.get('file');
-      
-      if (!file) {
-        return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+      try {
+        const formData = await request.formData();
+        const file = formData.get('file');
+        
+        if (!file) {
+          return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+        }
+        
+        // Check file size - Vercel has a 50MB limit by default
+        const fileSize = file.size;
+        if (fileSize > 50 * 1024 * 1024) {
+          console.warn(`Large file detected: ${Math.round(fileSize / 1024 / 1024)}MB`);
+          console.warn('Vercel has a 50MB limit by default. Consider using chunked uploads for very large files.');
+        }
+        
+        audioBuffer = Buffer.from(await file.arrayBuffer());
+        estimatedOriginalSize = audioBuffer.length;
+        audioFormat = file.name.split('.').pop() || 'mp3';
+        
+        console.log('Direct file upload received:', {
+          fileName: file.name,
+          fileSize: Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100 + 'MB',
+          format: audioFormat
+        });
+        
+      } catch (uploadError) {
+        console.error('File upload error:', uploadError);
+        return NextResponse.json({ 
+          error: 'Failed to process file upload. File may be too large or corrupted.',
+          suggestion: 'Try uploading a smaller file (<50MB) or contact support for large file processing.'
+        }, { status: 400 });
       }
-      
-      audioBuffer = Buffer.from(await file.arrayBuffer());
-      estimatedOriginalSize = audioBuffer.length;
-      audioFormat = file.name.split('.').pop() || 'mp3';
-      
-      console.log('Direct file upload received:', {
-        fileName: file.name,
-        fileSize: Math.round(estimatedOriginalSize / 1024 / 1024 * 100) / 100 + 'MB',
-        format: audioFormat
-      });
       
     } else {
       // Handle base64 data (legacy support)
